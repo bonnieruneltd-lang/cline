@@ -33,7 +33,7 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, AsyncIterator, Optional, Sequence
 
 import aiohttp
 import discord
@@ -407,7 +407,7 @@ class DailySync:
         rows = await self.db.fetchall(f"PRAGMA table_info({quote_identifier(table)})")
         return [row["name"] for row in rows]
 
-    async def iter_table_rows(self, table: str) -> Iterable[list]:
+    async def iter_table_rows(self, table: str) -> AsyncIterator[list]:
         offset = 0
         while True:
             rows = await self.db.fetchall(
