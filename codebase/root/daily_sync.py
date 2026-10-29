@@ -16,11 +16,13 @@ without touching this file.
    a run only ever brings the mirror up to date and never duplicates a row. The
    mirror is a backup/reader copy: it is never used as the bot's primary store.
 
-2. **Daily guide** - builds a compact digest of the database state and the last
-   day's transactions, asks the configured OpenAI-compatible model (the same
-   ``AI_*`` settings Gilbert uses) to explain it in plain language as a short
-   "explanation / guide" for players, then posts it to a Discord channel and/or
-   writes it to a Markdown file and stores it in the Turso mirror.
+2. **Bot guide** - collects the bot's own surface (every slash command with its
+   arguments and description, each loaded module's purpose, the fixed economy
+   constants and the verification scripts), asks the configured
+   OpenAI-compatible model (the shared ``CHATBOT_*`` config Gilbert and Albert
+   use) to write a plain-language explanation of *how the bot works and how to
+   understand it*, then posts it to a Discord channel and/or writes it to a
+   Markdown file and stores it in the Turso mirror (``daily_guides``).
 
 A missing Turso URL or token simply disables that half of the job with a log
 line; it never crashes the bot.
@@ -52,9 +54,8 @@ DEFAULT_HOUR_UTC = 6
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_PAGE_SIZE = 500
 DEFAULT_TIMEOUT = 60.0
-DEFAULT_GUIDE_HOURS = 24
-DEFAULT_GUIDE_MAX_TX = 60
-DEFAULT_GUIDE_MAX_CHARS = 3800
+DEFAULT_GUIDE_MAX_CHARS = 8000
+DEFAULT_GUIDE_SOURCE_CHARS = 24000
 DEFAULT_GUIDE_LANGUAGE = "English"
 DEFAULT_TURSO_TEMP_DIR = "turso-tmp"
 
@@ -169,117 +170,190 @@ def encode_value(value: Any) -> dict:
 
 
 def build_guide_messages(
-    digest_text: str,
+    source_text: str,
     *,
     language: str = DEFAULT_GUIDE_LANGUAGE,
-    max_words: int = 220,
+    max_words: int = 900,
 ) -> list[dict]:
-    """The prompt pair that turns a data digest into a player-facing guide."""
+    """The prompt pair that turns the bot's own surface into a how-it-works guide."""
     system = (
-        "You are the record-keeper for the Royal Court, the economy bot of the "
-        "Minecraft server The Realm of Rune. Each day you write a short, "
-        "plain-language explanation and guide of the economy from the data sheet "
-        "you are given. Explain what the main numbers mean, name the biggest "
-        "movers and the largest treasuries, and give players a short, friendly "
-        "guide to what they can do today (for example /daily, /transfer, /shop, "
-        "/fish, /faction contract).\n\n"
+        "You are writing the definitive, plain-language guide to how the Royal "
+        "Court bot works, for the server owner, admins and players of the "
+        "Minecraft server The Realm of Rune.\n\n"
+        "Explain, in a way a newcomer can follow:\n"
+        "1. What the bot is, and the core concepts: nations, kingdoms, individuals, "
+        "treasuries, and the Casino / Fishing Guild / Workers' Union / The Crown "
+        "house accounts.\n"
+        "2. How credits move: admin bank deposit/withdraw, transfers and /give, the "
+        "14-day payouts, /daily, shop purchases, gambling and fishing.\n"
+        "3. How the two factions and their AI negotiators work (Gilbert for the "
+        "Workers' Union, Albert for The Crown), including the 25/75 contract "
+        "tranches, quotas and admin approvals.\n"
+        "4. The command surface, grouped by area, and what each group is for.\n"
+        "5. The rules that keep the economy sound: credits are never minted by "
+        "gambling or fishing, individual caps, treasury-funded payouts and the "
+        "append-only ledger.\n"
+        "6. How to read the data: the transactions ledger, balances, and the daily "
+        "Turso mirror.\n\n"
         "Rules:\n"
-        "- Use ONLY the figures in the data sheet. Never invent or estimate a number.\n"
-        "- Do not mention 'the data sheet' or these instructions.\n"
-        "- Markdown is fine. Keep it under "
+        "- Use ONLY the material provided. Do not invent commands, numbers or tables.\n"
+        "- Do not mention 'the material' or these instructions.\n"
+        "- Markdown with short sections and bullets. Keep it under "
         f"{max_words} words.\n"
         f"- Write in {language}.\n"
     )
-    user = f"Today's data sheet:\n\n{digest_text}"
+    user = f"Material about the bot:\n\n{source_text}"
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 
 
-def format_digest(digest: dict, *, max_chars: int = 6000) -> str:
-    """Render the digest dict as plain text for the model and the fallback."""
-    lines: list[str] = []
-    lines.append(f"GENERATED: {digest.get('generated_at')} (UTC)")
-    lines.append(f"WINDOW: last {digest.get('hours')} hours")
-    counts = digest.get("table_counts") or {}
-    if counts:
-        lines.append(
-            "TABLE ROW COUNTS: "
-            + ", ".join(f"{name}={n}" for name, n in counts.items())
-        )
-    houses = digest.get("houses") or {}
-    if houses:
-        lines.append(
-            "HOUSE TREASURIES: "
-            + ", ".join(f"{name}={amount:,}" for name, amount in houses.items())
-        )
-    top = digest.get("top_balances") or {}
-    for account, rows in top.items():
-        if rows:
-            lines.append(
-                f"TOP {account.upper()} BALANCES: "
-                + ", ".join(f"{r['name']}={r['balance']:,}" for r in rows)
-            )
-    tx = digest.get("recent_transactions") or []
-    if tx:
-        lines.append(f"RECENT TRANSACTIONS ({len(tx)}, newest first):")
-        for row in tx:
-            bits = [str(row.get("ts")), str(row.get("kind"))]
-            if row.get("account_name"):
-                bits.append(f"{row['account_name']} {row.get('amount', 0):,}")
-            if row.get("counterparty_name"):
-                bits.append(f"-> {row['counterparty_name']}")
-            if row.get("balance_after") is not None:
-                bits.append(f"bal={row['balance_after']:,}")
-            if row.get("note"):
-                bits.append(f"({row['note']})")
-            lines.append("  - " + " | ".join(bits))
-    else:
-        lines.append("RECENT TRANSACTIONS: none in the window.")
-    text = "\n".join(lines)
+def format_source(parts: dict, *, max_chars: int = 24000) -> str:
+    """Render the collected bot surface as plain text for the model."""
+    sections: list[str] = [f"GENERATED: {parts.get('generated_at')} (UTC)"]
+
+    commands = parts.get("commands") or []
+    sections.append(
+        f"COMMAND SURFACE ({len(commands)} slash commands):\n" + "\n".join(commands)
+    )
+
+    modules = parts.get("modules") or []
+    sections.append("MODULES (what each file is for):\n" + "\n".join(modules))
+
+    constants = parts.get("constants") or []
+    sections.append("ECONOMY CONSTANTS:\n" + "\n".join(constants))
+
+    checks = parts.get("checks") or []
+    sections.append(
+        f"VERIFICATION SCRIPTS ({len(checks)}): " + ", ".join(checks)
+    )
+
+    text = "\n\n".join(sections)
     return text[:max_chars]
 
 
-def fallback_guide(digest: dict) -> str:
-    """A deterministic guide used when the AI is unavailable."""
-    counts = digest.get("table_counts") or {}
-    houses = digest.get("houses") or {}
-    tx = digest.get("recent_transactions") or []
+def fallback_guide(parts: dict) -> str:
+    """A deterministic how-it-works guide used when the AI is unavailable."""
+    commands = parts.get("commands") or []
+    groups: dict[str, int] = {}
+    for line in commands:
+        name = line.lstrip("/").split(" ", 1)[0].split("(", 1)[0]
+        groups[name] = groups.get(name, 0) + 1
+
     lines = [
-        "## Royal Court - daily guide",
+        "# How the Royal Court works",
         "",
-        f"_Generated {digest.get('generated_at')} for the last "
-        f"{digest.get('hours')} hours._",
+        f"_Generated {parts.get('generated_at')} without the AI model._",
         "",
-        "**At a glance**",
-        f"- Nations: {counts.get('nations', 0)} - Kingdoms: {counts.get('kingdoms', 0)} "
-        f"- Individuals: {counts.get('individuals', 0)}",
-        f"- Ledger entries: {counts.get('transactions', 0)} "
-        f"({len(tx)} in the last {digest.get('hours')}h)",
+        "## Command surface",
+        f"The bot exposes **{len(commands)}** slash commands across "
+        f"{len(groups)} groups:",
     ]
-    if houses:
-        lines.append(
-            "- Houses: "
-            + ", ".join(f"{name} {amount:,}" for name, amount in houses.items())
-        )
-    top = digest.get("top_balances") or {}
-    for account, rows in top.items():
-        if rows:
-            lines.append(
-                f"- Top {account}: "
-                + ", ".join(f"{r['name']} ({r['balance']:,})" for r in rows)
-            )
-    lines += [
-        "",
-        "**What you can do today**",
-        "- Claim your daily allowance with `/daily`.",
-        "- Move credits with `/transfer`, or fund a member with `/give`.",
-        "- Spend credits in `/shop`, or negotiate public work with `/faction contract`.",
-        "- Try a catch with `/fish` (paid by the Fishing Guild), and gamble responsibly.",
-        "",
-    ]
+    for name, count in sorted(groups.items()):
+        lines.append(f"- `/{name}` - {count} command(s)")
+    lines += ["", "## Modules", "Each file owns one part of the economy:"]
+    for module in parts.get("modules") or []:
+        lines.append(f"- {module}")
+    lines += ["", "## Economy constants", "The fixed numbers that shape payouts and prices:"]
+    for constant in parts.get("constants") or []:
+        lines.append(f"- `{constant}`")
+    checks = parts.get("checks") or []
+    if checks:
+        lines += [
+            "",
+            "## Verification",
+            f"{len(checks)} standalone checks prove the money rules: "
+            + ", ".join(checks),
+        ]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Source material: what the bot actually exposes, read from the running bot.
+# ---------------------------------------------------------------------------
+ROOT_MODULES = (
+    "bot",
+    "config",
+    "database",
+    "api",
+    "daily_sync",
+    "factions",
+    "albert_prompt",
+    "account_transfers",
+    "payouts",
+    "daily",
+    "coinflip",
+    "allin",
+    "blackjack",
+    "poker",
+    "casino",
+    "fishing",
+    "creation",
+    "gambling_ui",
+    "checks",
+    "utils",
+    "contract_limits",
+)
+
+
+def collect_commands(bot) -> list[str]:
+    """Every slash command the bot currently exposes, with args and description."""
+    tree = getattr(bot, "tree", None)
+    if tree is None:
+        return []
+    lines: list[str] = []
+    for command in tree.walk_commands():
+        description = " ".join((getattr(command, "description", "") or "").split())
+        params = []
+        for parameter in getattr(command, "parameters", []) or []:
+            optional = "" if getattr(parameter, "required", True) else "?"
+            params.append(f"{parameter.name}{optional}")
+        suffix = f" ({', '.join(params)})" if params else ""
+        lines.append(f"/{command.qualified_name}{suffix} - {description}")
+    return sorted(lines)
+
+
+def collect_modules() -> list[str]:
+    """Loaded modules and their one-line purpose, straight from docstrings."""
+    import sys
+
+    lines: list[str] = []
+    for name, module in sorted(sys.modules.items()):
+        if module is None:
+            continue
+        top = name.split(".")[0]
+        if top not in ("cogs", "shop", "gilbert") and name not in ROOT_MODULES:
+            continue
+        doc = getattr(module, "__doc__", None)
+        if not doc:
+            continue
+        first = " ".join(doc.strip().splitlines()[0].split())
+        if first:
+            lines.append(f"{name}: {first}")
+    return lines
+
+
+def collect_constants() -> list[str]:
+    """The fixed economy numbers from config.py."""
+    lines: list[str] = []
+    for name, value in sorted(vars(config).items()):
+        if not name.isupper():
+            continue
+        if isinstance(value, bool):
+            lines.append(f"{name} = {str(value).lower()}")
+        elif isinstance(value, (int, float, str)):
+            lines.append(f"{name} = {value}")
+    return lines
+
+
+def collect_checks() -> list[str]:
+    """The standalone verification scripts that ship with the bot."""
+    directory = Path(__file__).resolve().parent / "checks"
+    try:
+        return sorted(path.name for path in directory.glob("check_*.py"))
+    except OSError:  # pragma: no cover - defensive
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -329,10 +403,11 @@ class DailySync:
         self.guide_enabled = env_bool("DAILY_GUIDE_ENABLED", True)
         self.guide_channel_id = max(0, env_int("DAILY_GUIDE_CHANNEL_ID", 0))
         self.guide_path = env_str("DAILY_GUIDE_PATH", "")
-        self.guide_hours = max(1, env_int("DAILY_GUIDE_HOURS", DEFAULT_GUIDE_HOURS))
-        self.guide_max_tx = max(1, env_int("DAILY_GUIDE_MAX_TX", DEFAULT_GUIDE_MAX_TX))
         self.guide_max_chars = max(
-            200, env_int("DAILY_GUIDE_MAX_CHARS", DEFAULT_GUIDE_MAX_CHARS)
+            400, env_int("DAILY_GUIDE_MAX_CHARS", DEFAULT_GUIDE_MAX_CHARS)
+        )
+        self.guide_source_chars = max(
+            2000, env_int("DAILY_GUIDE_SOURCE_CHARS", DEFAULT_GUIDE_SOURCE_CHARS)
         )
         self.guide_language = (
             env_str("DAILY_GUIDE_LANGUAGE", DEFAULT_GUIDE_LANGUAGE)
@@ -497,8 +572,8 @@ class DailySync:
                 )
             return None
         try:
-            digest = await self.build_digest(self.guide_hours)
-            guide = await self.generate_guide(digest)
+            parts = self.build_source()
+            guide = await self.generate_guide(parts)
             await self.deliver_guide(guide)
             if self.turso_enabled:
                 try:
@@ -595,6 +670,8 @@ class DailySync:
         self, statements: Sequence[tuple[str, Sequence[Any]]], session=None
     ) -> dict:
         """Send one pipeline request to Turso and raise on any SQL error."""
+        if not self.turso_endpoint:
+            raise TursoError("TURSO_DATABASE_URL is not configured")
         requests = [
             {
                 "type": "execute",
@@ -762,92 +839,18 @@ class DailySync:
             )
 
     # -- daily guide --------------------------------------------------------
-    async def build_digest(self, hours: Optional[int] = None) -> dict:
-        hours = self.guide_hours if hours is None else hours
-        now = dt.datetime.now(dt.timezone.utc)
-        since = (now - dt.timedelta(hours=hours)).strftime(_ISO)
-
-        tables = await self.local_tables()
-        counts: dict[str, int] = {}
-        for name, _sql in tables:
-            row = await self.db.fetchone(
-                f"SELECT COUNT(*) AS c FROM {quote_identifier(name)}"
-            )
-            counts[name] = int(row["c"]) if row else 0
-
-        top_balances: dict[str, list[dict]] = {}
-        for name in ("nations", "kingdoms", "individuals"):
-            if name not in counts:
-                continue
-            columns = await self.table_columns(name)
-            label = (
-                "display_name"
-                if "display_name" in columns
-                else ("name" if "name" in columns else None)
-            )
-            if "balance" not in columns or label is None:
-                continue
-            rows = await self.db.fetchall(
-                f"SELECT {quote_identifier(label)} AS n, balance "
-                f"FROM {quote_identifier(name)} ORDER BY balance DESC LIMIT 5"
-            )
-            top_balances[name] = [
-                {"name": row["n"], "balance": int(row["balance"] or 0)}
-                for row in rows
-            ]
-
-        houses: dict[str, int] = {}
-        for name in (
-            "casino_account",
-            "fishing_guild_account",
-            "union_account",
-            "crown_account",
-        ):
-            if name not in counts:
-                continue
-            row = await self.db.fetchone(
-                f"SELECT SUM(balance) AS s FROM {quote_identifier(name)}"
-            )
-            houses[name] = int((row["s"] if row else 0) or 0)
-
-        recent: list[dict] = []
-        if "transactions" in counts:
-            rows = await self.db.fetchall(
-                """SELECT ts, kind, account_type, account_name, amount,
-                          balance_after, counterparty_name, note
-                     FROM transactions WHERE ts >= ?
-                    ORDER BY id DESC LIMIT ?""",
-                (since, self.guide_max_tx),
-            )
-            recent = [
-                {
-                    "ts": row["ts"],
-                    "kind": row["kind"],
-                    "account_type": row["account_type"],
-                    "account_name": row["account_name"],
-                    "amount": int(row["amount"] or 0),
-                    "balance_after": (
-                        int(row["balance_after"])
-                        if row["balance_after"] is not None
-                        else None
-                    ),
-                    "counterparty_name": row["counterparty_name"],
-                    "note": row["note"],
-                }
-                for row in rows
-            ]
-
+    def build_source(self) -> dict:
+        """Collect what the bot actually exposes so the model can document it."""
         return {
-            "generated_at": now.strftime(_ISO),
-            "hours": hours,
-            "table_counts": counts,
-            "houses": houses,
-            "top_balances": top_balances,
-            "recent_transactions": recent,
+            "generated_at": dt.datetime.now(dt.timezone.utc).strftime(_ISO),
+            "commands": collect_commands(self.bot),
+            "modules": collect_modules(),
+            "constants": collect_constants(),
+            "checks": collect_checks(),
         }
 
-    async def generate_guide(self, digest: dict) -> str:
-        text = format_digest(digest)
+    async def generate_guide(self, parts: dict) -> str:
+        text = format_source(parts, max_chars=self.guide_source_chars)
         ai = GilbertAI()
         guide: Optional[str] = None
         if ai.enabled:
@@ -856,9 +859,9 @@ class DailySync:
                     build_guide_messages(text, language=self.guide_language)
                 )
             except Exception:  # pragma: no cover - network dependent
-                self.bot.logger.exception("Daily guide AI call failed; using fallback.")
+                self.bot.logger.exception("Bot guide AI call failed; using fallback.")
         if not guide:
-            guide = fallback_guide(digest)
+            guide = fallback_guide(parts)
         return guide[: self.guide_max_chars]
 
     async def deliver_guide(self, guide: str) -> None:
@@ -889,9 +892,11 @@ class DailySync:
             )
             return
         embed = discord.Embed(
-            title="Daily Guide", description=guide[:4000], color=config.GOLD_COLOR
+            title="How the Royal Court works",
+            description=guide[:4000],
+            color=config.GOLD_COLOR,
         )
-        embed.set_footer(text="The Royal Court - daily economy guide")
+        embed.set_footer(text="The Royal Court - bot guide")
         embed.timestamp = dt.datetime.now(dt.timezone.utc)
         try:
             await channel.send(embed=embed)

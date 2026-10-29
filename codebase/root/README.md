@@ -217,9 +217,8 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `DAILY_GUIDE_CHANNEL_ID` | Channel that receives the daily guide |
 | `DAILY_GUIDE_GUILD_ID` | Guild id stored on each guide row (falls back to `GUILD_ID`, then the bot's only guild) |
 | `DAILY_GUIDE_PATH` | Also write the guide to this Markdown file |
-| `DAILY_GUIDE_HOURS` | Transaction window the guide summarises (default 24) |
-| `DAILY_GUIDE_MAX_TX` | Maximum transactions fed to the model (default 60) |
-| `DAILY_GUIDE_MAX_CHARS` | Maximum guide length (default 3800) |
+| `DAILY_GUIDE_SOURCE_CHARS` | Max characters of bot material sent to the model (default 24000) |
+| `DAILY_GUIDE_MAX_CHARS` | Max guide length returned (default 8000) |
 | `DAILY_GUIDE_LANGUAGE` | Language the guide is written in (default English) |
 
 ### Database
@@ -286,13 +285,17 @@ next scheduled hour. `DAILY_TASK_RUN_ON_START`, `TURSO_RUN_ON_START` and
    only brings the mirror up to date (it is a backup/reader copy, never the
    bot's primary store). Requires both `TURSO_DATABASE_URL` and
    `TURSO_AUTH_TOKEN`; with either missing the mirror is skipped with a log line.
-2. **AI guide.** A compact digest (table row counts, top treasuries, the four
-   house accounts and the last `DAILY_GUIDE_HOURS` of transactions) is sent to
-   the configured OpenAI-compatible model (the same `CHATBOT_*` settings Gilbert
-   and Albert use) to write a plain-language explanation/guide. It is posted to
-   `DAILY_GUIDE_CHANNEL_ID` (if set), written to `DAILY_GUIDE_PATH` (if set) and
-   stored in a `daily_guides` table in the mirror. If the model is unavailable a
-   deterministic fallback is used, so a guide is always produced.
+2. **AI guide (how the bot works).** The bot's own surface — every slash command
+   with its arguments and description, each loaded module's purpose, the fixed
+   economy constants, and the verification scripts — is sent to the configured
+   OpenAI-compatible model (the same `CHATBOT_*` settings Gilbert and Albert
+   use), which writes a plain-language guide to **how the bot works and how to
+   understand it**. It is posted to `DAILY_GUIDE_CHANNEL_ID` (if set), written to
+   `DAILY_GUIDE_PATH` (if set) and stored in the `daily_guides` table in the
+   mirror. `DAILY_GUIDE_SOURCE_CHARS` caps the source and
+   `DAILY_GUIDE_MAX_CHARS` the output. If the model is unavailable a
+   deterministic fallback built from the same material is used, so a guide is
+   always produced.
 
 Nothing is hard-bound: every URL, token, hour, channel, path and size is an
 environment variable (see the table above), so any of them can be changed from

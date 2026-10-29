@@ -1,12 +1,11 @@
 """Daily-sync checks: URL encoding, SQL generation, env config, digest."""
-import asyncio, json, logging, os, sys, tempfile
+import json, logging, os, sys, tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
 import daily_sync  # noqa: E402
-from database import Database  # noqa: E402
 
 fails = []
 
@@ -64,10 +63,12 @@ check("existing IF NOT EXISTS kept",
 check("empty DDL stays empty", daily_sync.ensure_create_if_not_exists("") == "")
 
 # --- guide prompt -----------------------------------------------------------
-messages = daily_sync.build_guide_messages("SHEET")
+messages = daily_sync.build_guide_messages("MATERIAL")
 check("prompt has system+user", len(messages) == 2)
-check("prompt forbids invention", "Never invent" in messages[0]["content"])
-check("prompt carries the digest", "SHEET" in messages[1]["content"])
+check("prompt asks for how it works",
+      "how the Royal Court bot works" in messages[0]["content"])
+check("prompt forbids invention", "Do not invent" in messages[0]["content"])
+check("prompt carries the material", "MATERIAL" in messages[1]["content"])
 
 # --- env driven config (nothing hard-bound) ---------------------------------
 with patch.dict(os.environ, {
@@ -192,37 +193,66 @@ with patch.dict(os.environ, {
     check("guide on with a file path", ds.guide_configured is True)
 
 
-# --- digest from a throwaway database --------------------------------------
-async def digest_checks():
-    db = Database(os.path.join(tempfile.mkdtemp(), "d.db"))
-    await db.connect()
-    try:
-        nation_id = await db.create_nation(1, "Aurum", 42)
-        await db.add_balance("nations", nation_id, 20_000)
-        await db.create_kingdom(1, "Crownlands", 42)
-        await db.get_individual(1, 7, "Tester")
-        await db.log_tx(guild_id=1, kind="payout", account_type="nation",
-                        account_id=nation_id, account_name="Aurum", amount=20_000,
-                        balance_after=20_000, note="test payout")
-        ds = daily_sync.DailySync(FakeBot(db))
-        digest = await ds.build_digest(24)
-        check("digest counts nations", digest["table_counts"].get("nations", 0) >= 1)
-        check("digest counts transactions",
-              digest["table_counts"].get("transactions", 0) >= 1)
-        check("digest keeps recent tx", len(digest["recent_transactions"]) == 1)
-        check("digest sees top balance",
-              digest["top_balances"]["nations"][0]["balance"] == 20_000)
-        check("digest lists houses", "casino_account" in digest["houses"])
-        text = daily_sync.format_digest(digest)
-        check("formatted digest has counts", "TABLE ROW COUNTS" in text)
-        check("formatted digest has tx", "test payout" in text)
-        guide = daily_sync.fallback_guide(digest)
-        check("fallback guide non-empty", "daily guide" in guide and "/daily" in guide)
-    finally:
-        await db.close()
+# --- source material & guide ------------------------------------------------
 
 
-asyncio.run(digest_checks())
+class _Param:
+    def __init__(self, name, required=True):
+        self.name = name
+        self.required = required
+
+
+class _Command:
+    def __init__(self, name, description, params=()):
+        self.qualified_name = name
+        self.description = description
+        self.parameters = list(params)
+
+
+class _Tree:
+    def __init__(self, commands):
+        self._commands = list(commands)
+
+    def walk_commands(self):
+        return iter(self._commands)
+
+
+class _Bot(FakeBot):
+    def __init__(self, db=None, commands=()):
+        super().__init__(db)
+        self.tree = _Tree(commands)
+
+
+source = daily_sync.DailySync(
+    _Bot(None, [
+        _Command("payout cash", "Pay allowances immediately.", [_Param("guild", False)]),
+        _Command("payout default", "Run the full cycle."),
+        _Command("transfer", "Move credits.", [_Param("source"), _Param("amount")]),
+    ])
+).build_source()
+
+check("source collects commands", len(source["commands"]) == 3, source["commands"])
+check("source command carries args",
+      any("payout cash (guild?)" in c for c in source["commands"]), source["commands"])
+check("source collects constants",
+      any(c.startswith("NATION_BASE") for c in source["constants"]))
+check("source collects checks",
+      any(c.startswith("check_") for c in source["checks"]))
+check("source collects modules",
+      any(c.startswith("config:") for c in source["modules"]))
+
+text = daily_sync.format_source(source)
+check("formatted source has command surface", "COMMAND SURFACE" in text)
+check("formatted source has constants", "ECONOMY CONSTANTS" in text)
+check("formatted source has modules", "MODULES" in text)
+check("formatted source caps length",
+      len(daily_sync.format_source(source, max_chars=50)) == 50)
+
+guide = daily_sync.fallback_guide(source)
+check("fallback guide is about the bot", "How the Royal Court works" in guide)
+check("fallback guide groups commands",
+      "`/payout` - 2 command(s)" in guide, guide[:200])
+check("fallback guide lists modules", "config:" in guide)
 
 print("\nFAILURES:", len(fails))
 for f in fails:
