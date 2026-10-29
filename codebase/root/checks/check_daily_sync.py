@@ -86,6 +86,33 @@ with patch.dict(os.environ, {
     ds = daily_sync.DailySync(FakeBot(None))
     check("TURSO_SYNC_ENABLED=false disables mirror", ds.turso_enabled is False)
 
+# The guide only runs when it has a destination (channel, file or Turso).
+with patch.dict(os.environ, {
+    "DAILY_GUIDE_CHANNEL_ID": "0",
+    "DAILY_GUIDE_PATH": "",
+    "TURSO_DATABASE_URL": "",
+    "TURSO_AUTH_TOKEN": "",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide off without a destination", ds.guide_configured is False)
+
+with patch.dict(os.environ, {
+    "DAILY_GUIDE_CHANNEL_ID": "999",
+    "TURSO_DATABASE_URL": "",
+    "TURSO_AUTH_TOKEN": "",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide on with a channel", ds.guide_configured is True)
+
+with patch.dict(os.environ, {
+    "DAILY_GUIDE_CHANNEL_ID": "0",
+    "DAILY_GUIDE_PATH": "guide.md",
+    "TURSO_DATABASE_URL": "",
+    "TURSO_AUTH_TOKEN": "",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide on with a file path", ds.guide_configured is True)
+
 
 # --- digest from a throwaway database --------------------------------------
 async def digest_checks():

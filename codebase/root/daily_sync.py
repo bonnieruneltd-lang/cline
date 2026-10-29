@@ -315,6 +315,11 @@ class DailySync:
         )
 
     @property
+    def guide_configured(self) -> bool:
+        """The guide needs somewhere to go, or generating it just wastes a call."""
+        return bool(self.guide_channel_id or self.guide_path or self.turso_enabled)
+
+    @property
     def db(self):
         return self.bot.db
 
@@ -368,7 +373,7 @@ class DailySync:
                 "TURSO_DATABASE_URL/TURSO_AUTH_TOKEN not set)."
             )
 
-        if self.guide_enabled:
+        if self.guide_enabled and self.guide_configured:
             try:
                 digest = await self.build_digest(self.guide_hours)
                 guide = await self.generate_guide(digest)
@@ -383,6 +388,11 @@ class DailySync:
                         )
             except Exception:  # pragma: no cover - defensive
                 self.bot.logger.exception("Daily guide failed.")
+        elif self.guide_enabled:
+            self.bot.logger.info(
+                "Daily guide skipped: set DAILY_GUIDE_CHANNEL_ID or DAILY_GUIDE_PATH "
+                "(or enable Turso) to give it a destination."
+            )
 
         return result
 
