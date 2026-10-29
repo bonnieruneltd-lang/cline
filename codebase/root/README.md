@@ -215,6 +215,7 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `DAILY_GUIDE_RUN_ON_START` | Run the guide once on startup (default on) |
 | `DAILY_GUIDE_ENABLED` | `false` turns the AI guide off (default on) |
 | `DAILY_GUIDE_CHANNEL_ID` | Channel that receives the daily guide |
+| `DAILY_GUIDE_GUILD_ID` | Guild id stored on each guide row (falls back to `GUILD_ID`, then the bot's only guild) |
 | `DAILY_GUIDE_PATH` | Also write the guide to this Markdown file |
 | `DAILY_GUIDE_HOURS` | Transaction window the guide summarises (default 24) |
 | `DAILY_GUIDE_MAX_TX` | Maximum transactions fed to the model (default 60) |

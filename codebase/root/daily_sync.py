@@ -699,6 +699,23 @@ class DailySync:
         )
         return counts
 
+    def guide_guild_id(self) -> Optional[int]:
+        """The guild a guide belongs to.
+
+        ``DAILY_GUIDE_GUILD_ID`` wins, then ``GUILD_ID``, then the bot's only
+        guild. Returns ``None`` rather than guessing when the bot serves several
+        guilds and neither variable is set.
+        """
+        for name in ("DAILY_GUIDE_GUILD_ID", "GUILD_ID"):
+            raw = env_str(name, "")
+            if raw:
+                try:
+                    return int(raw)
+                except ValueError:
+                    pass
+        guilds = list(getattr(self.bot, "guilds", []) or [])
+        return guilds[0].id if len(guilds) == 1 else None
+
     async def store_guide(self, guide: str) -> None:
         """Keep a copy of each generated guide in the mirror."""
         await self._turso_execute(
@@ -717,7 +734,7 @@ class DailySync:
                     "VALUES (?, ?, ?)",
                     [
                         dt.datetime.now(dt.timezone.utc).strftime(_ISO),
-                        self.guide_channel_id or None,
+                        self.guide_guild_id(),
                         guide,
                     ],
                 ),

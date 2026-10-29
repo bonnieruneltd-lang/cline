@@ -136,6 +136,24 @@ with patch.dict(os.environ, {
     check("mirror startup run can be disabled", ds.turso_run_on_start is False)
     check("startup delay from env", ds.start_delay == 12, ds.start_delay)
 
+# The guide row carries a real guild id (a channel id is not a guild id).
+with patch.dict(os.environ, {"DAILY_GUIDE_GUILD_ID": "5", "GUILD_ID": "77"}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide guild id prefers DAILY_GUIDE_GUILD_ID",
+          ds.guide_guild_id() == 5, ds.guide_guild_id())
+with patch.dict(os.environ, {"DAILY_GUIDE_GUILD_ID": "", "GUILD_ID": "77"}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide guild id falls back to GUILD_ID", ds.guide_guild_id() == 77)
+with patch.dict(os.environ, {"DAILY_GUIDE_GUILD_ID": "", "GUILD_ID": ""}, clear=False):
+    bot = FakeBot(None)
+    check("guide guild id None with no guilds", daily_sync.DailySync(bot).guide_guild_id() is None)
+
+    class _Guild:
+        id = 123
+
+    bot.guilds = [_Guild()]
+    check("guide guild id from the only guild", daily_sync.DailySync(bot).guide_guild_id() == 123)
+
 # The checkpoint is written into the mirror's own temp directory.
 checkpoint_dir = tempfile.mkdtemp()
 with patch.dict(os.environ, {"TURSO_TEMP_DIR": checkpoint_dir}, clear=False):
