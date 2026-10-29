@@ -4,7 +4,15 @@ gilbert/ai.py
 Async client for an OpenAI-compatible chat-completions endpoint.
 
 Works with OpenAI, Azure OpenAI, OpenRouter, Ollama, LM Studio, vLLM and any
-other service exposing ``POST {AI_API_URL}/chat/completions``.
+other service exposing ``POST {CHATBOT_API_URL}/chat/completions``.
+
+Shared chat-bot configuration
+-----------------------------
+Gilbert (Workers' Union) and Albert (The Crown) both talk through this one
+client, so the settings are the **chat-bot** config: ``CHATBOT_API_KEY``,
+``CHATBOT_API_URL``, ``CHATBOT_MODEL``, ``CHATBOT_TIMEOUT``,
+``CHATBOT_TEMPERATURE`` and ``CHATBOT_MAX_TOKENS``. The old ``AI_*`` names are
+still read as a fallback so an existing ``.env`` keeps working during migration.
 """
 from __future__ import annotations
 
@@ -20,14 +28,43 @@ _DEFAULT_MODEL = "deepseek-chat"
 # deepseek-chat is the portable default for DeepSeek-compatible services.
 _DEEPSEEK_MODEL_ALIASES = {"deepseek-flash": _DEFAULT_MODEL, "deepseek": _DEFAULT_MODEL}
 
+# Fields that moved from AI_* to CHATBOT_*. Documented here so the migration is
+# visible; the fallback itself lives in ``_cfg``.
+_RENAMED = {
+    "AI_API_URL": "CHATBOT_API_URL",
+    "AI_API_KEY": "CHATBOT_API_KEY",
+    "AI_MODEL": "CHATBOT_MODEL",
+    "AI_TIMEOUT": "CHATBOT_TIMEOUT",
+    "AI_TEMPERATURE": "CHATBOT_TEMPERATURE",
+    "AI_MAX_TOKENS": "CHATBOT_MAX_TOKENS",
+}
+_LEGACY_WARNED: set[str] = set()
+
+
+def _cfg(name: str, default: str = "") -> str:
+    """Read ``CHATBOT_<name>``, falling back to the legacy ``AI_<name>``."""
+    new = os.getenv(f"CHATBOT_{name}")
+    if new is not None and new.strip():
+        return new.strip()
+    old = os.getenv(f"AI_{name}")
+    if old is not None and old.strip():
+        if name not in _LEGACY_WARNED:
+            _LEGACY_WARNED.add(name)
+            logger.warning(
+                "AI_%s is deprecated; use CHATBOT_%s (chat-bot config).", name, name
+            )
+        return old.strip()
+    return default
+
+
 
 class GilbertAI:
     def __init__(self) -> None:
-        self.base_url = os.getenv("AI_API_URL", "https://api.deepseek.com").strip().rstrip("/")
+        self.base_url = _cfg("API_URL", "https://api.deepseek.com").rstrip("/")
         if self.base_url.endswith("/chat/completions"):
             self.base_url = self.base_url[: -len("/chat/completions")]
-        self.api_key = os.getenv("AI_API_KEY", "").strip()
-        self.model = os.getenv("AI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
+        self.api_key = _cfg("API_KEY", "")
+        self.model = _cfg("MODEL", _DEFAULT_MODEL) or _DEFAULT_MODEL
         if "api.deepseek.com" in self.base_url:
             alias = _DEEPSEEK_MODEL_ALIASES.get(self.model.lower())
             if alias and alias != self.model:
@@ -38,15 +75,15 @@ class GilbertAI:
                 )
                 self.model = alias
         try:
-            self.timeout = float(os.getenv("AI_TIMEOUT", "60"))
+            self.timeout = float(_cfg("TIMEOUT", "60"))
         except ValueError:
             self.timeout = 60.0
         try:
-            self.temperature = float(os.getenv("AI_TEMPERATURE", "0.6"))
+            self.temperature = float(_cfg("TEMPERATURE", "0.6"))
         except ValueError:
             self.temperature = 0.6
         try:
-            self.max_tokens = int(os.getenv("AI_MAX_TOKENS", "900"))
+            self.max_tokens = int(_cfg("MAX_TOKENS", "900"))
         except ValueError:
             self.max_tokens = 900
 

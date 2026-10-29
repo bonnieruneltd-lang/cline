@@ -63,9 +63,13 @@ moves, a command was added or lost — update the assertion deliberately, never
 by editing the script to match whatever it printed.
 `daily_sync.py` (the daily Turso mirror + AI guide) is started from `bot.py` the
 same way `api.py` is: it is **not** a cog, so it adds no commands and leaves the
-112 / 16 assertions untouched. All of its knobs are environment variables (see
-README "Daily sync"); with no `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` it only logs
-that the mirror is skipped.
+112 / 16 assertions untouched. The mirror has its own token (`TURSO_AUTH_TOKEN`),
+its own runtime (`TURSO_RUN_*`) and its own temp dir (`TURSO_TEMP_DIR`, where it
+writes `last_sync.json`); the guide uses `DAILY_*`. Gilbert and Albert now read
+the shared **chat-bot** config (`CHATBOT_*`); the legacy `AI_*` names still work
+as a fallback. All of it is environment variables (see README "Daily sync"); with
+no `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` it only logs that the mirror is
+skipped.
 
 
 

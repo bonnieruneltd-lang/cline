@@ -1,5 +1,6 @@
 """Daily-sync checks: URL encoding, SQL generation, env config, digest."""
-import asyncio, logging, os, sys, tempfile
+import asyncio, json, logging, os, sys, tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
@@ -54,6 +55,13 @@ check("insert statement",
       daily_sync.insert_statement("t", ["a", "b"])
       == 'INSERT OR REPLACE INTO "t" ("a", "b") VALUES (?, ?)',
       daily_sync.insert_statement("t", ["a", "b"]))
+check("CREATE TABLE made idempotent",
+      daily_sync.ensure_create_if_not_exists("CREATE TABLE t (id INTEGER)")
+      == "CREATE TABLE IF NOT EXISTS t (id INTEGER)")
+check("existing IF NOT EXISTS kept",
+      daily_sync.ensure_create_if_not_exists("CREATE TABLE IF NOT EXISTS t (id INTEGER)")
+      == "CREATE TABLE IF NOT EXISTS t (id INTEGER)")
+check("empty DDL stays empty", daily_sync.ensure_create_if_not_exists("") == "")
 
 # --- guide prompt -----------------------------------------------------------
 messages = daily_sync.build_guide_messages("SHEET")
@@ -85,6 +93,37 @@ with patch.dict(os.environ, {
 }, clear=False):
     ds = daily_sync.DailySync(FakeBot(None))
     check("TURSO_SYNC_ENABLED=false disables mirror", ds.turso_enabled is False)
+
+# The mirror has its own runtime + temp config, separate from the guide.
+with patch.dict(os.environ, {
+    "TURSO_DATABASE_URL": "libsql://db.turso.io",
+    "TURSO_AUTH_TOKEN": "tok",
+    "TURSO_RUN_HOUR_UTC": "4",
+    "TURSO_TEMP_DIR": "/tmp/turso-scratch",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("mirror runtime hour from env", ds.turso_run_hour == 4, ds.turso_run_hour)
+    check("mirror temp dir from env", str(ds.temp_dir) == "/tmp/turso-scratch", ds.temp_dir)
+    check("mirror runtime configured", ds.turso_run_configured is True)
+
+with patch.dict(os.environ, {
+    "TURSO_DATABASE_URL": "libsql://db.turso.io",
+    "TURSO_AUTH_TOKEN": "tok",
+    "TURSO_RUN_ENABLED": "false",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("TURSO_RUN_ENABLED=false stops the mirror runtime",
+          ds.turso_run_configured is False)
+
+# The checkpoint is written into the mirror's own temp directory.
+checkpoint_dir = tempfile.mkdtemp()
+with patch.dict(os.environ, {"TURSO_TEMP_DIR": checkpoint_dir}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    ds.write_checkpoint({"nations": 2, "transactions": 5})
+    saved = json.loads((Path(checkpoint_dir) / "last_sync.json").read_text())
+    check("checkpoint tables", saved["tables"] == 2, saved.get("tables"))
+    check("checkpoint rows", saved["rows"] == 7, saved.get("rows"))
+    check("checkpoint per-table", saved["per_table"]["transactions"] == 5, saved)
 
 # The guide only runs when it has a destination (channel, file or Turso).
 with patch.dict(os.environ, {

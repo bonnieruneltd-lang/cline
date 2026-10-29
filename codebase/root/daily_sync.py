@@ -32,6 +32,7 @@ import base64
 import datetime as dt
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional, Sequence
 
@@ -54,6 +55,7 @@ DEFAULT_GUIDE_HOURS = 24
 DEFAULT_GUIDE_MAX_TX = 60
 DEFAULT_GUIDE_MAX_CHARS = 3800
 DEFAULT_GUIDE_LANGUAGE = "English"
+DEFAULT_TURSO_TEMP_DIR = "turso-tmp"
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
 
@@ -124,6 +126,26 @@ def insert_statement(table: str, columns: Sequence[str]) -> str:
     return (
         f"INSERT OR REPLACE INTO {quote_identifier(table)} "
         f"({cols}) VALUES ({marks})"
+    )
+
+
+def ensure_create_if_not_exists(sql: str) -> str:
+    """Make a stored ``CREATE TABLE`` idempotent for repeated mirror runs.
+
+    SQLite drops the ``IF NOT EXISTS`` clause when it stores a table's DDL in
+    ``sqlite_master``, so replaying it verbatim fails the second time a mirror
+    runs. This puts the clause back.
+    """
+    statement = (sql or "").strip()
+    if not statement:
+        return statement
+    if re.match(r"(?is)^create\s+table\s+if\s+not\s+exists\b", statement):
+        return statement
+    return re.sub(
+        r"(?is)^(create\s+(?:temp\s+|temporary\s+)?table)\s+",
+        r"\1 IF NOT EXISTS ",
+        statement,
+        count=1,
     )
 
 
@@ -287,6 +309,14 @@ class DailySync:
             for name in env_str("TURSO_SYNC_EXCLUDE_TABLES", "").split(",")
             if name.strip()
         }
+        # The mirror has its own runtime (schedule) and its own temp directory,
+        # separate from the guide job, so either can be tuned on its own.
+        self.turso_run_enabled = env_bool("TURSO_RUN_ENABLED", True)
+        self.turso_run_hour = min(
+            23, max(0, env_int("TURSO_RUN_HOUR_UTC", self.hour_utc))
+        )
+        self.turso_run_interval = max(0, env_int("TURSO_RUN_INTERVAL_SECONDS", 0))
+        self.turso_temp_dir = env_str("TURSO_TEMP_DIR", DEFAULT_TURSO_TEMP_DIR)
 
         # --- daily guide ---------------------------------------------------
         self.guide_enabled = env_bool("DAILY_GUIDE_ENABLED", True)
@@ -303,6 +333,7 @@ class DailySync:
         )
 
         self._task: Optional[tasks.Loop] = None
+        self._turso_task: Optional[tasks.Loop] = None
 
     # -- configuration view -------------------------------------------------
     @property
@@ -313,6 +344,16 @@ class DailySync:
             and bool(self.turso_token)
             and bool(self.turso_endpoint)
         )
+
+    @property
+    def turso_run_configured(self) -> bool:
+        """The mirror's own runtime runs only when it is enabled and configured."""
+        return self.turso_enabled and self.turso_run_enabled
+
+    @property
+    def temp_dir(self) -> Path:
+        """Scratch directory owned by the Turso mirror (never the bot's own)."""
+        return Path(self.turso_temp_dir or DEFAULT_TURSO_TEMP_DIR).expanduser()
 
     @property
     def guide_configured(self) -> bool:
@@ -340,60 +381,98 @@ class DailySync:
         self._task = loop
         loop.start()
         self.bot.logger.info(
-            "Daily sync started (%s): turso=%s guide=%s.",
+            "Daily guide started (%s): guide=%s turso=%s.",
             when,
-            "on" if self.turso_enabled else "off",
             "on" if self.guide_enabled else "off",
+            "on" if self.turso_enabled else "off",
         )
 
+        # The Turso mirror is its own runtime: own schedule, own temp directory.
+        if self.turso_run_configured and (
+            self._turso_task is None or not self._turso_task.is_running()
+        ):
+            if self.turso_run_interval > 0:
+                mirror = tasks.loop(seconds=self.turso_run_interval)(self._turso_loop)
+                mirror_when = f"every {self.turso_run_interval}s"
+            else:
+                at = dt.time(hour=self.turso_run_hour, tzinfo=dt.timezone.utc)
+                mirror = tasks.loop(time=at)(self._turso_loop)
+                mirror_when = f"daily at {self.turso_run_hour:02d}:00 UTC"
+            self._turso_task = mirror
+            mirror.start()
+            self.bot.logger.info(
+                "Turso mirror started (%s): temp=%s endpoint=%s.",
+                mirror_when, self.temp_dir, self.turso_endpoint,
+            )
+
     async def stop(self) -> None:
-        if self._task is not None and self._task.is_running():
-            self._task.cancel()
+        for task in (self._task, self._turso_task):
+            if task is not None and task.is_running():
+                task.cancel()
 
     async def _run_loop(self) -> None:
         try:
             await self.bot.wait_until_ready()
         except Exception:  # pragma: no cover - never block the job on this
             pass
-        await self.run_jobs()
+        await self.run_guide()
+
+    async def _turso_loop(self) -> None:
+        try:
+            await self.bot.wait_until_ready()
+        except Exception:  # pragma: no cover
+            pass
+        try:
+            await self.run_mirror()
+        except Exception:  # pragma: no cover - network dependent
+            self.bot.logger.exception("Daily Turso mirror failed.")
 
     # -- the two jobs -------------------------------------------------------
-    async def run_jobs(self) -> dict:
-        """Run both jobs, isolating their failures from each other."""
-        result: dict[str, Any] = {"turso": None, "guide": None}
-
-        if self.turso_enabled:
-            try:
-                result["turso"] = await self.sync_to_turso()
-            except Exception:  # pragma: no cover - network dependent
-                self.bot.logger.exception("Daily Turso mirror failed.")
-        else:
+    async def run_mirror(self) -> Optional[dict[str, int]]:
+        """Copy every table/row into Turso and write the temp checkpoint."""
+        if not self.turso_enabled:
             self.bot.logger.info(
                 "Turso mirror skipped (TURSO_SYNC_ENABLED=false or "
                 "TURSO_DATABASE_URL/TURSO_AUTH_TOKEN not set)."
             )
+            return None
+        counts = await self.sync_to_turso()
+        self.write_checkpoint(counts)
+        return counts
 
-        if self.guide_enabled and self.guide_configured:
-            try:
-                digest = await self.build_digest(self.guide_hours)
-                guide = await self.generate_guide(digest)
-                result["guide"] = guide
-                await self.deliver_guide(guide)
-                if self.turso_enabled:
-                    try:
-                        await self.store_guide(guide)
-                    except Exception:  # pragma: no cover - network dependent
-                        self.bot.logger.exception(
-                            "Could not store the daily guide in Turso."
-                        )
-            except Exception:  # pragma: no cover - defensive
-                self.bot.logger.exception("Daily guide failed.")
-        elif self.guide_enabled:
-            self.bot.logger.info(
-                "Daily guide skipped: set DAILY_GUIDE_CHANNEL_ID or DAILY_GUIDE_PATH "
-                "(or enable Turso) to give it a destination."
-            )
+    async def run_guide(self) -> Optional[str]:
+        """Build and deliver the daily explanation/guide."""
+        if not (self.guide_enabled and self.guide_configured):
+            if self.guide_enabled:
+                self.bot.logger.info(
+                    "Daily guide skipped: set DAILY_GUIDE_CHANNEL_ID or "
+                    "DAILY_GUIDE_PATH (or enable Turso) to give it a destination."
+                )
+            return None
+        try:
+            digest = await self.build_digest(self.guide_hours)
+            guide = await self.generate_guide(digest)
+            await self.deliver_guide(guide)
+            if self.turso_enabled:
+                try:
+                    await self.store_guide(guide)
+                except Exception:  # pragma: no cover - network dependent
+                    self.bot.logger.exception(
+                        "Could not store the daily guide in Turso."
+                    )
+            return guide
+        except Exception:  # pragma: no cover - defensive
+            self.bot.logger.exception("Daily guide failed.")
+            return None
 
+    async def run_jobs(self) -> dict:
+        """Run both jobs once (manual/testing); the loops call them separately."""
+        result: dict[str, Any] = {"turso": None, "guide": None}
+        try:
+            result["turso"] = await self.run_mirror()
+        except Exception:  # pragma: no cover - network dependent
+            self.bot.logger.exception("Daily Turso mirror failed.")
+        result["guide"] = await self.run_guide()
         return result
 
     # -- Turso mirror -------------------------------------------------------
@@ -413,9 +492,42 @@ class DailySync:
             tables.append((name, row["sql"]))
         return tables
 
-    async def table_columns(self, table: str) -> list[str]:
+    async def table_info(self, table: str) -> list[dict]:
         rows = await self.db.fetchall(f"PRAGMA table_info({quote_identifier(table)})")
-        return [row["name"] for row in rows]
+        return [
+            {
+                "name": row["name"],
+                "type": (row["type"] or "").strip(),
+                "notnull": int(row["notnull"] or 0),
+                "default": row["dflt_value"],
+                "pk": int(row["pk"] or 0),
+            }
+            for row in rows
+        ]
+
+    async def table_columns(self, table: str) -> list[str]:
+        return [column["name"] for column in await self.table_info(table)]
+
+    async def turso_columns(self, table: str, session=None) -> set[str]:
+        """Column names already present on the remote table."""
+        data = await self._turso_execute(
+            [(f"PRAGMA table_info({quote_identifier(table)})", [])], session=session
+        )
+        # The request may carry a leading PRAGMA, so pick the result that
+        # actually has a column list rather than trusting results[0].
+        result: dict = {}
+        for item in data.get("results", []):
+            candidate = (item.get("response") or {}).get("result") or {}
+            if "cols" in candidate:
+                result = candidate
+        col_names = [column.get("name") for column in result.get("cols", [])]
+        index = col_names.index("name") if "name" in col_names else 1
+        found: set[str] = set()
+        for row in result.get("rows", []):
+            cell = row[index] if index < len(row) else None
+            if cell and cell.get("type") != "null" and cell.get("value"):
+                found.add(cell["value"])
+        return found
 
     async def iter_table_rows(self, table: str) -> AsyncIterator[list]:
         offset = 0
@@ -439,10 +551,21 @@ class DailySync:
         requests = [
             {
                 "type": "execute",
+                "stmt": {"sql": "PRAGMA foreign_keys=OFF"},
+            }
+        ]
+        # The mirror is a bulk copy, so referential checks belong to the source
+        # database: a child row may land in an earlier batch than its parent.
+        # libSQL enforces foreign keys by default, so switch them off for this
+        # request. The schema still declares the constraints; they just are not
+        # checked while copying.
+        requests.extend(
+            {
+                "type": "execute",
                 "stmt": {"sql": sql, "args": [encode_value(v) for v in args]},
             }
             for sql, args in statements
-        ]
+        )
         requests.append({"type": "close"})
         headers = {
             "Authorization": f"Bearer {self.turso_token}",
@@ -475,9 +598,9 @@ class DailySync:
         return data
 
     async def sync_to_turso(self) -> dict[str, int]:
-        """Create the remote schema and upsert every row of every table."""
+        """Create/upgrade the remote schema and upsert every row of every table."""
         tables = await self.local_tables()
-        ddl = [(sql, []) for _name, sql in tables if sql]
+        ddl = [(ensure_create_if_not_exists(sql), []) for _name, sql in tables if sql]
         if ddl:
             await self._turso_execute(ddl)
 
@@ -486,10 +609,29 @@ class DailySync:
             timeout=aiohttp.ClientTimeout(total=self.turso_timeout)
         ) as session:
             for name, _sql in tables:
-                columns = await self.table_columns(name)
+                info = await self.table_info(name)
+                columns = [column["name"] for column in info]
                 if not columns:
                     counts[name] = 0
                     continue
+                # Reconcile schema drift: a local migration may have added a
+                # column that the remote mirror does not have yet.
+                remote = await self.turso_columns(name, session=session)
+                missing = [column for column in info if column["name"] not in remote]
+                if missing:
+                    alters = [
+                        (
+                            f"ALTER TABLE {quote_identifier(name)} ADD COLUMN "
+                            f"{quote_identifier(column['name'])}"
+                            + (f" {column['type']}" if column["type"] else ""),
+                            [],
+                        )
+                        for column in missing
+                    ]
+                    await self._turso_execute(alters, session=session)
+                    self.bot.logger.info(
+                        "Turso mirror added %d column(s) to %s.", len(missing), name
+                    )
                 statement = insert_statement(name, columns)
                 batch: list[tuple[str, Sequence[Any]]] = []
                 total = 0
@@ -534,6 +676,26 @@ class DailySync:
                 ),
             ]
         )
+
+    def write_checkpoint(self, counts: dict[str, int]) -> None:
+        """Record the last mirror run in the mirror's own temp directory."""
+        try:
+            directory = self.temp_dir
+            directory.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "last_sync_at": dt.datetime.now(dt.timezone.utc).strftime(_ISO),
+                "endpoint": self.turso_endpoint,
+                "tables": len(counts),
+                "rows": sum(counts.values()),
+                "per_table": counts,
+            }
+            (directory / "last_sync.json").write_text(
+                json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+            )
+        except OSError:
+            self.bot.logger.exception(
+                "Could not write the Turso checkpoint to %s.", self.temp_dir
+            )
 
     # -- daily guide --------------------------------------------------------
     async def build_digest(self, hours: Optional[int] = None) -> dict:

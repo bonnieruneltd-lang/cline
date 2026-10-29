@@ -186,24 +186,28 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `GUILD_ID` | Guild used for fast slash-command sync (optional) |
 | `DB_PATH` | SQLite file path (default `royal_bank.db`) |
 | `LOG_LEVEL` | Python logging level |
-| `AI_API_KEY` | Key for the Gilbert chat endpoint |
-| `AI_API_URL` | OpenAI-compatible base URL |
-| `AI_MODEL` | Model name |
-| `AI_TIMEOUT` | Request timeout in seconds |
-| `AI_TEMPERATURE` | Sampling temperature |
-| `AI_MAX_TOKENS` | Reply token limit |
+| `CHATBOT_API_KEY` | Chat-bot key shared by Gilbert + Albert (legacy `AI_API_KEY` still works) |
+| `CHATBOT_API_URL` | Chat-bot OpenAI-compatible base URL (legacy `AI_API_URL`) |
+| `CHATBOT_MODEL` | Chat-bot model name (legacy `AI_MODEL`) |
+| `CHATBOT_TIMEOUT` | Chat-bot request timeout in seconds (legacy `AI_TIMEOUT`) |
+| `CHATBOT_TEMPERATURE` | Chat-bot sampling temperature (legacy `AI_TEMPERATURE`) |
+| `CHATBOT_MAX_TOKENS` | Chat-bot reply token limit (legacy `AI_MAX_TOKENS`) |
 | `API_TOKEN` | Shared bearer token for the Forge mod |
 | `API_HOST` | HTTP bind address |
 | `API_PORT` | HTTP port |
 | `TURSO_DATABASE_URL` | Turso/libSQL URL (`libsql://...`) for the daily mirror |
-| `TURSO_AUTH_TOKEN` | Turso token for the daily mirror |
-| `TURSO_SYNC_ENABLED` | `false` turns the daily mirror off (default on) |
+| `TURSO_AUTH_TOKEN` | The mirror's **own** token, separate from the chat-bot/API tokens |
+| `TURSO_SYNC_ENABLED` | `false` turns the mirror off (default on) |
 | `TURSO_SYNC_BATCH_SIZE` | Statements per Turso pipeline request (default 100) |
 | `TURSO_SYNC_PAGE_SIZE` | Rows read from SQLite per page (default 500) |
 | `TURSO_SYNC_EXCLUDE_TABLES` | Comma-separated tables the mirror must skip |
 | `TURSO_TIMEOUT` | Turso request timeout in seconds (default 60) |
+| `TURSO_RUN_ENABLED` | `false` stops the mirror's own runtime (default on) |
+| `TURSO_RUN_HOUR_UTC` | UTC hour for the mirror's own run (default `DAILY_TASK_HOUR_UTC`) |
+| `TURSO_RUN_INTERVAL_SECONDS` | Run the mirror on a fixed interval instead |
+| `TURSO_TEMP_DIR` | The mirror's **own** scratch dir for its checkpoint (default `turso-tmp`) |
 | `DAILY_TASK_ENABLED` | `false` turns the whole daily job off |
-| `DAILY_TASK_HOUR_UTC` | UTC hour for the once-a-day run (default 6) |
+| `DAILY_TASK_HOUR_UTC` | UTC hour for the guide run (default 6) |
 | `DAILY_TASK_INTERVAL_SECONDS` | Use a fixed interval instead of a daily hour |
 | `DAILY_GUIDE_ENABLED` | `false` turns the AI guide off (default on) |
 | `DAILY_GUIDE_CHANNEL_ID` | Channel that receives the daily guide |
@@ -255,9 +259,14 @@ Tables:
 
 ### Daily sync (Turso mirror + AI guide)
 
-`daily_sync.py` runs two jobs once a day, at `DAILY_TASK_HOUR_UTC` (default
-06:00 UTC). Both halves are independent and env-gated, so the bot behaves
-exactly as before until they are configured.
+`daily_sync.py` runs two jobs, each on its own runtime and each env-gated, so the
+bot behaves exactly as before until they are configured. The **Turso mirror**
+uses `TURSO_RUN_HOUR_UTC` / `TURSO_RUN_INTERVAL_SECONDS`, its own token
+(`TURSO_AUTH_TOKEN`) and its own scratch directory (`TURSO_TEMP_DIR`, default
+`turso-tmp`, where it writes `last_sync.json` after each run). The **AI guide**
+uses `DAILY_TASK_HOUR_UTC` (default 06:00 UTC). Gilbert and Albert share the
+**chat-bot** config (`CHATBOT_*`); the old `AI_*` names are still read as a
+fallback.
 
 1. **Turso mirror.** Every row of every table — including the append-only
    `transactions` ledger — is copied into the Turso/libSQL database named by
@@ -268,8 +277,8 @@ exactly as before until they are configured.
    `TURSO_AUTH_TOKEN`; with either missing the mirror is skipped with a log line.
 2. **AI guide.** A compact digest (table row counts, top treasuries, the four
    house accounts and the last `DAILY_GUIDE_HOURS` of transactions) is sent to
-   the configured OpenAI-compatible model (the same `AI_*` settings Gilbert
-   uses) to write a plain-language explanation/guide. It is posted to
+   the configured OpenAI-compatible model (the same `CHATBOT_*` settings Gilbert
+   and Albert use) to write a plain-language explanation/guide. It is posted to
    `DAILY_GUIDE_CHANNEL_ID` (if set), written to `DAILY_GUIDE_PATH` (if set) and
    stored in a `daily_guides` table in the mirror. If the model is unavailable a
    deterministic fallback is used, so a guide is always produced.

@@ -23,14 +23,20 @@ def check(label, cond, detail=""):
         fails.append(label)
 
 
+# The shared chat-bot config (CHATBOT_*) is read first.
 with patch.dict(
     os.environ,
     {
-        "AI_API_URL": "https://api.deepseek.com/",
-        "AI_MODEL": "deepseek-flash",
-        "AI_API_KEY": "test-key",
-        "AI_TIMEOUT": "12",
-        "AI_MAX_TOKENS": "64",
+        "CHATBOT_API_URL": "https://api.deepseek.com/",
+        "CHATBOT_MODEL": "deepseek-flash",
+        "CHATBOT_API_KEY": "test-key",
+        "CHATBOT_TIMEOUT": "12",
+        "CHATBOT_MAX_TOKENS": "64",
+        "AI_API_URL": "",
+        "AI_MODEL": "",
+        "AI_API_KEY": "",
+        "AI_TIMEOUT": "",
+        "AI_MAX_TOKENS": "",
     },
     clear=False,
 ):
@@ -41,11 +47,43 @@ with patch.dict(
     check("timeout is parsed", ai.timeout == 12.0, ai.timeout)
     check("token cap is parsed", ai.max_tokens == 64, ai.max_tokens)
 
+# The legacy AI_* names still work as a fallback.
 with patch.dict(
     os.environ,
     {
-        "AI_API_URL": "https://example.test/v1/chat/completions",
-        "AI_MODEL": "custom-model",
+        "CHATBOT_API_URL": "",
+        "CHATBOT_MODEL": "",
+        "CHATBOT_API_KEY": "",
+        "CHATBOT_TIMEOUT": "",
+        "CHATBOT_MAX_TOKENS": "",
+        "AI_API_URL": "https://legacy.test/",
+        "AI_MODEL": "legacy-model",
+        "AI_API_KEY": "legacy-key",
+    },
+    clear=False,
+):
+    ai = GilbertAI()
+    check("legacy AI_* fallback: URL", ai.base_url == "https://legacy.test", ai.base_url)
+    check("legacy AI_* fallback: model", ai.model == "legacy-model", ai.model)
+    check("legacy AI_* fallback: key", ai.enabled is True)
+
+# CHATBOT_* wins over AI_* when both are set.
+with patch.dict(
+    os.environ,
+    {"CHATBOT_MODEL": "chatbot-model", "AI_MODEL": "legacy-model"},
+    clear=False,
+):
+    ai = GilbertAI()
+    check("CHATBOT_MODEL beats AI_MODEL", ai.model == "chatbot-model", ai.model)
+
+with patch.dict(
+    os.environ,
+    {
+        "CHATBOT_API_URL": "https://example.test/v1/chat/completions",
+        "CHATBOT_MODEL": "custom-model",
+        "CHATBOT_API_KEY": "",
+        "AI_API_URL": "",
+        "AI_MODEL": "",
         "AI_API_KEY": "",
     },
     clear=False,
