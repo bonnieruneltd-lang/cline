@@ -28,6 +28,7 @@ line; it never crashes the bot.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import datetime as dt
 import json
@@ -295,6 +296,12 @@ class DailySync:
         self.hour_utc = min(23, max(0, env_int("DAILY_TASK_HOUR_UTC", DEFAULT_HOUR_UTC)))
         # 0 => run once a day at hour_utc. >0 => fixed interval (useful for tests).
         self.interval_seconds = max(0, env_int("DAILY_TASK_INTERVAL_SECONDS", 0))
+        # Also run once when the bot becomes ready (so a restart refreshes the
+        # mirror and guide instead of waiting for the next scheduled hour).
+        self.run_on_start = env_bool("DAILY_TASK_RUN_ON_START", True)
+        self.turso_run_on_start = env_bool("TURSO_RUN_ON_START", True)
+        self.guide_run_on_start = env_bool("DAILY_GUIDE_RUN_ON_START", True)
+        self.start_delay = max(0, env_int("DAILY_TASK_START_DELAY_SECONDS", 5))
 
         # --- Turso / libSQL mirror ----------------------------------------
         self.turso_url = env_str("TURSO_DATABASE_URL", "")
@@ -334,6 +341,7 @@ class DailySync:
 
         self._task: Optional[tasks.Loop] = None
         self._turso_task: Optional[tasks.Loop] = None
+        self._startup_task: Optional[asyncio.Task] = None
 
     # -- configuration view -------------------------------------------------
     @property
@@ -405,10 +413,22 @@ class DailySync:
                 mirror_when, self.temp_dir, self.turso_endpoint,
             )
 
+        # Also run once as soon as the bot is ready (opt out per half).
+        if self.run_on_start and self._startup_task is None:
+            self._startup_task = asyncio.create_task(self._run_on_start())
+            self.bot.logger.info(
+                "Daily sync will also run once on startup (delay %ss, mirror=%s guide=%s).",
+                self.start_delay,
+                "on" if self.turso_run_on_start else "off",
+                "on" if self.guide_run_on_start else "off",
+            )
+
     async def stop(self) -> None:
         for task in (self._task, self._turso_task):
             if task is not None and task.is_running():
                 task.cancel()
+        if self._startup_task is not None and not self._startup_task.done():
+            self._startup_task.cancel()
 
     async def _run_loop(self) -> None:
         try:
@@ -426,6 +446,33 @@ class DailySync:
             await self.run_mirror()
         except Exception:  # pragma: no cover - network dependent
             self.bot.logger.exception("Daily Turso mirror failed.")
+
+    async def _run_on_start(self) -> None:
+        """One-shot run when the bot becomes ready (a restart refreshes things)."""
+        try:
+            await self.bot.wait_until_ready()
+        except Exception:  # pragma: no cover - never block startup on this
+            pass
+        if self.start_delay:
+            try:
+                await asyncio.sleep(self.start_delay)
+            except asyncio.CancelledError:
+                raise
+        self.bot.logger.info(
+            "Daily sync: running on startup (mirror=%s guide=%s).",
+            "on" if self.turso_run_on_start else "off",
+            "on" if self.guide_run_on_start else "off",
+        )
+        if self.turso_run_on_start:
+            try:
+                await self.run_mirror()
+            except Exception:  # pragma: no cover - network dependent
+                self.bot.logger.exception("Startup Turso mirror failed.")
+        if self.guide_run_on_start:
+            try:
+                await self.run_guide()
+            except Exception:  # pragma: no cover - defensive
+                self.bot.logger.exception("Startup daily guide failed.")
 
     # -- the two jobs -------------------------------------------------------
     async def run_mirror(self) -> Optional[dict[str, int]]:

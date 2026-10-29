@@ -209,6 +209,10 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `DAILY_TASK_ENABLED` | `false` turns the whole daily job off |
 | `DAILY_TASK_HOUR_UTC` | UTC hour for the guide run (default 6) |
 | `DAILY_TASK_INTERVAL_SECONDS` | Use a fixed interval instead of a daily hour |
+| `DAILY_TASK_RUN_ON_START` | Also run once when the bot becomes ready (restart) — default on |
+| `DAILY_TASK_START_DELAY_SECONDS` | Delay before that startup run (default 5) |
+| `TURSO_RUN_ON_START` | Run the mirror once on startup (default on) |
+| `DAILY_GUIDE_RUN_ON_START` | Run the guide once on startup (default on) |
 | `DAILY_GUIDE_ENABLED` | `false` turns the AI guide off (default on) |
 | `DAILY_GUIDE_CHANNEL_ID` | Channel that receives the daily guide |
 | `DAILY_GUIDE_PATH` | Also write the guide to this Markdown file |
@@ -267,6 +271,12 @@ uses `TURSO_RUN_HOUR_UTC` / `TURSO_RUN_INTERVAL_SECONDS`, its own token
 uses `DAILY_TASK_HOUR_UTC` (default 06:00 UTC). Gilbert and Albert share the
 **chat-bot** config (`CHATBOT_*`); the old `AI_*` names are still read as a
 fallback.
+
+**It also runs once on startup.** When the bot becomes ready, `daily_sync.py`
+runs the mirror and the guide once (after `DAILY_TASK_START_DELAY_SECONDS`,
+default 5), so a restart refreshes Turso and the guide instead of waiting for the
+next scheduled hour. `DAILY_TASK_RUN_ON_START`, `TURSO_RUN_ON_START` and
+`DAILY_GUIDE_RUN_ON_START` (all default on) switch that off independently.
 
 1. **Turso mirror.** Every row of every table — including the append-only
    `transactions` ledger — is copied into the Turso/libSQL database named by

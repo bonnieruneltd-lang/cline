@@ -69,7 +69,9 @@ writes `last_sync.json`); the guide uses `DAILY_*`. Gilbert and Albert now read
 the shared **chat-bot** config (`CHATBOT_*`); the legacy `AI_*` names still work
 as a fallback. All of it is environment variables (see README "Daily sync"); with
 no `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` it only logs that the mirror is
-skipped.
+skipped. It also runs both once when the bot becomes ready
+(`DAILY_TASK_RUN_ON_START`, `TURSO_RUN_ON_START`, `DAILY_GUIDE_RUN_ON_START`,
+default on), so a restart refreshes the mirror and guide immediately.
 
 
 

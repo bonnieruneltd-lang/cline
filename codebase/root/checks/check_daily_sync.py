@@ -115,6 +115,27 @@ with patch.dict(os.environ, {
     check("TURSO_RUN_ENABLED=false stops the mirror runtime",
           ds.turso_run_configured is False)
 
+# Startup run is on by default and can be switched off per half.
+with patch.dict(os.environ, {
+    "DAILY_TASK_RUN_ON_START": "",
+    "TURSO_RUN_ON_START": "",
+    "DAILY_GUIDE_RUN_ON_START": "",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("run-on-start defaults on",
+          ds.run_on_start and ds.turso_run_on_start and ds.guide_run_on_start)
+
+with patch.dict(os.environ, {
+    "DAILY_TASK_RUN_ON_START": "false",
+    "TURSO_RUN_ON_START": "false",
+    "DAILY_GUIDE_RUN_ON_START": "false",
+    "DAILY_TASK_START_DELAY_SECONDS": "12",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("run-on-start can be disabled", ds.run_on_start is False)
+    check("mirror startup run can be disabled", ds.turso_run_on_start is False)
+    check("startup delay from env", ds.start_delay == 12, ds.start_delay)
+
 # The checkpoint is written into the mirror's own temp directory.
 checkpoint_dir = tempfile.mkdtemp()
 with patch.dict(os.environ, {"TURSO_TEMP_DIR": checkpoint_dir}, clear=False):
