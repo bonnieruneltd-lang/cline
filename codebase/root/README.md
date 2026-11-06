@@ -454,6 +454,7 @@ Every source file and what it is for. Sub-packages have their own README.
 | `checks/check_casino.py` | Blackjack rules (including multi-ace soft hands) and every settlement branch, house solvency, conservation over 200 wagers, restart refund, wallet-deletion lifecycle, poker command/table/final-stack settlement, public posts |
 | `checks/check_fishing.py` | `/fish` range/refusals, Fishing Guild guarded balance, end-to-end catch and ledger, cap/short-guild refusals, admin funding |
 | `checks/check_poker.py` | Poker evaluator (category order, wheel, best five of seven), side pots, uncalled-bet refunds, short all-ins not reopening raises, odd chips, blinds and the big blind's option, 400 seeded hands with chips conserved |
+| `checks/check_shop.py` | Royal Shop and kit pricing (slot-limit shulker fee, nation/kingdom discounts, the Union 50% split that never stacks, bundle expansion, family bans), then `/shop buy`, `/shop order`, `/shop markredeemed`, `/kit create` and `/kit buy` driven end to end: exact debit, order rows, delivered components, DM'd key, ledger row, short-treasury and banned-item refusals, the 7-day cooldown and double redemption |
 | `checks/check_gilbert.py` | DeepSeek alias/base-URL normalisation, both reply shapes (plain + Cline `data{}` envelope), per-instance model/temperature/token overrides, provider failure hints (401/402/404/429/empty-content), the lookup trigger/query/format/cap and its disabled path, prompt tier/context facts |
 | `checks/check_cogs.py` | Concurrent `/daily` claims plus import and cog-load smoke test (114 commands, 16 cogs) |
 | `checks/check_daily_sync.py` | Turso endpoint/value encoding and idempotent DDL, guide prompt completeness (sections, FAQ, platform, word sizing), the ECONOMY RULES wording, guide model/temperature/token overrides and clamping, `guild_id` resolution, run-on-start switches, disabled without credentials |
@@ -1112,12 +1113,12 @@ README. The live bot runs from the account root, not from that folder.
    reads `status = completed` with `upfront_claimed = 1` and
    `final_claimed = 1`. Nothing is outstanding: do not ask an admin to claim or
    release it again.
-4. **Tests.** The `checks/` suite is the automated verification: 21 standalone
+4. **Tests.** The `checks/` suite is the automated verification: 22 standalone
    scripts run by `python3 checks/run_all.py`, all passing against this tree.
    They cover the pure maths, the database and transaction layer, transfers,
    the per-run tax cycle, factions/Crown contracts, every gambling game
    including poker, slots and roulette, fishing and the Fishing Guild, the
-   `/daily` race, the daily
+   Royal Shop and kits, the `/daily` race, the daily
    Turso mirror and AI-guide configuration, the creation race, bank/draw guards,
    the runner's own false-pass guard and a cog-load smoke test. They build
    throwaway
@@ -1135,7 +1136,7 @@ README. The live bot runs from the account root, not from that folder.
    covered: per-run tax reads, wallet resurrection, draw membership, contract
    quota/approval races, stale `setbalance` deltas, guarded status writes,
    cross-guild case IDs, poker uncalled bets/short all-ins, the DM settings
-   ghost row and the runner false pass. See `BUG-FIXES.md`; the 21-check suite
+   ghost row and the runner false pass. See `BUG-FIXES.md`; the 22-check suite
    exercises each one. A follow-up pass also pinned the concurrent-Default
    double-pay guard, the `setbalance` reply-after-commit rule, the all-in
    confirmation idempotence and multi-ace `is_soft`; `check_factions.py`
@@ -1249,6 +1250,69 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-06 — Full-tree audit: local == live, shop/kits get their missing check (**uploaded; no restart needed**)
+
+**What was asked.** "Check all the files." So this pass audited rather than
+changed: the working copy was compared byte-for-byte with the host, the live
+database was reconciled, every module was reviewed, and every invocable command
+was executed against a throwaway database.
+
+**The tree matched the host exactly.** All 86 project files (`.py`, `.md`,
+`Procfile`, `.gitignore`) were downloaded from the SFTP account and diffed
+against this checkout: **no differences**. The only host-only files are `.env`
+and the generated `daily_guide.md`. The live process is on the same build the
+docs describe — `royal_bank.db` was reopened at **19:13:44**, the Turso mirror
+wrote `turso-tmp/last_sync.json` at **19:14:33** and the guide regenerated at
+**19:15:48** (24,502 chars).
+
+**The live data reconciles.** `PRAGMA integrity_check` = `ok`. Every ledger row
+was replayed in `id` order: all **681** rows have a `balance_after` equal to the
+previous balance plus the amount (**0 mismatches**), and the closing ledger sum
+equals the stored balance for **every** nation, kingdom, individual wallet, the
+Union, the Crown, the Casino and the Fishing Guild (**0 mismatched accounts**).
+Contract `UN-SOVERE-002` reads `negotiating` with `upfront_claimed = 1`; that is
+`/contract reopen` after a claimed approval, not a stray payout (ledger ids
+378/379 are the 25% tranche of 2 credits).
+
+**Every command runs.** A harness drove all **100** invocable command callbacks
+(the other 14 tree nodes are group parents) twice — once as an administrator and
+once as an ordinary member — with fakes for the interaction, guild, channel and
+thread surface. **No exceptions, no silent commands** in either pass. The shop
+and kit paths were then re-driven with real assertions and are now
+`checks/check_shop.py`.
+
+**The one defect found was documentation, not code.** `BUG-FIXES.md` listed
+"Shop | pricing maths, member vs non-member, mixed cart, shulker fee, double
+redemption" as covered, but no script imported `shop.checkout` or drove a
+purchase: `check_logic.py` only touched the pure constants. The shop is the main
+way credits leave a treasury, so that gap is now closed rather than papered
+over.
+
+**New: `checks/check_shop.py`.** Prices the cart without a database (slot-limit
+shulker fee, nation 20% / kingdom 25%, the Union 50% split that never stacks,
+clamping, bundle expansion, family bans, slot maths) and then drives
+`/shop buy`, `/shop order`, `/shop markredeemed`, `/kit create` and `/kit buy`
+against a throwaway SQLite file: exact debit, order row fields, concrete
+delivered components (never a `bundle:` key), the `RC-XXXXXX-XXXXXX` key, the
+DM, the ledger row, short-treasury / banned-item / non-leader refusals, the
+7-day kit cooldown and double redemption. `checks/run_all.py` now runs **22**
+scripts; the README, AGENTS and BUG-FIXES counts were corrected with it.
+
+**Verified.** `checks/run_all.py` **22/22**, `compileall` and `pyflakes` clean.
+Surface unchanged: **114 commands / 16 cogs** (no bot code was touched, so no
+restart is needed).
+
+**Uploaded.** `checks/check_shop.py` (new), `checks/run_all.py`, `README.md`,
+`AGENTS.md`, `BUG-FIXES.md`, each with a `.bak-20261106-193501` backup and a
+SHA-256 compared against the host after the write (all matched). The whole
+deployed `.py` tree was then pulled back into an empty directory and
+`compileall`, `pyflakes` and `run_all.py` were run **against that copy** **22/22**,
+so nothing was left behind by the upload.
+
+**Left alone deliberately.** The Forge mod is still a README, `POST
+/api/preview` still does not exist, and no economy number was changed: an audit
+that finds no bug should not invent one.
 
 ### 2026-11-06 — Session close-out: AI on cline-pass, live lookups, fuller guide (**deployed and live**)
 

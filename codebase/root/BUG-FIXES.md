@@ -1705,6 +1705,7 @@ python3 -m pyflakes .          # unused names, undefined references
 | `checks/check_casino.py` | blackjack rules (including multi-ace soft hands) and every settlement branch, house solvency and floor, conservation over 200 wagers, restart refund, double-settle guard, open-hand delete guard and no wallet resurrection, public posts |
 | `checks/check_fishing.py` | `/fish` random 20–100 range, pure cap/short-guild refusals, guarded Fishing Guild balance, end-to-end catch, both ledger sides, conservation, no-wallet and admin fund/withdraw |
 | `checks/check_poker.py` | evaluator category order, wheel, best five of seven, side pots and odd chips, uncalled-bet refunds, folded seats never paid, short all-ins not reopening raises, blind posting and the big blind's option, flop resets without losing the pot, 400 seeded hands with chips conserved and every hand terminating |
+| `checks/check_shop.py` | shop pricing (slot-limit shulker fee, nation 20% / kingdom 25%, the Union 50% split that never stacks, clamping, bundle expansion, family bans, slots), then `/shop buy`, `/shop order`, `/shop markredeemed`, `/kit create` and `/kit buy` end to end: exact debit, order rows, concrete delivered components, redeem-key shape, DM'd key, ledger row, short-treasury/banned-item/non-leader refusals, kit cooldown and double redemption |
 | `checks/check_gilbert.py` | DeepSeek model alias/base-URL normalisation, disabled-without-key, tier boundaries, prompt context facts (including soldiers), the friendlier tone, the membership-never-required rule, and Albert's contract briefing |
 | `checks/check_cogs.py` | concurrent `/daily` claims, import and cog-load smoke test, asserts 114 commands and 16 cogs, that `/faction` is the only faction command, and that `/faction contract` exposes exactly `faction`/`account`/`proposal`/`budget` |
 | `checks/check_creation_race.py` | concurrent creation yields one account and one bonus ledger row; an approval name race closes the petition as `failed`; `/nation add` and `/kingdom add` report the same clash instead of crashing |
@@ -1715,7 +1716,7 @@ Every script builds its own throwaway SQLite database in a temp directory. None
 of them read `royal_bank.db`, so the live file is never touched.
 `check_poker.py` needs no database at all: `poker.py` is pure.
 
-All 21 scripts pass as of 2026-11-06, against the working copy. When you fix a
+All 22 scripts pass as of 2026-11-06, against the working copy. When you fix a
 bug, add its check here — a fix without a check is how the
 transaction-isolation defect survived this long.
 
@@ -1724,7 +1725,7 @@ transaction-isolation defect survived this long.
 | Money core | transaction rollback, debit guard, transfer atomicity, `setbalance` fresh-delta atomicity, ledger reconciliation |
 | Contracts | leverage ladder, claim idempotency, double click, concurrent claim, 75%-until-release, closed contract, legacy refund, atomic quota, global case IDs, approval re-read, short treasury, midway rollback |
 | Draws | approval race, ex-member re-check, one-shot status |
-| Shop | pricing maths, member vs non-member, mixed cart, shulker fee, double redemption |
+| Shop | pricing maths, member vs non-member, mixed cart, shulker fee, double redemption (`check_shop.py`; the earlier "pricing maths" claim was only `check_logic.py`'s constants — no script drove the checkout) |
 | Union | treasury guards, membership lifecycle, cleanup on delete, dues, donations, command surface, commitment approval donation |
 | Individuals | 100M cap (partial and full), overdraw guard, deletion erases wallet + ledger rows, open-hand delete guard, no resurrection on settlement |
 | `/daily` | first claim, 24h cooldown, +10%/day, 400% cap, -20%/missed day, 60% floor, concurrent claims once, cap-trimmed payout |
@@ -1738,4 +1739,4 @@ transaction-isolation defect survived this long.
 | Runner | summary required; bare exit/ERROR is a failure |
 | Daily sync | endpoint/value encoding, idempotent DDL, guide source and fallback, `guild_id`, run-on-start switches, disabled without credentials |
 
-All 21 scripts pass. When you add a check, add it to this table.
+All 22 scripts pass. When you add a check, add it to this table.

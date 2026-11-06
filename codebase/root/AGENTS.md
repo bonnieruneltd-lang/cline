@@ -36,12 +36,14 @@ isolation, contract lifecycle/quota/approval/case-ID guards, individual
 transfers, unified all-direction transfers, the per-run tax cycle (including
 stale-list and recreated-wallet races), bank/draw guards, factions/Crown
 contracts and tax, coinflip, all-in, slots, roulette, blackjack, fishing, poker,
-Gilbert configuration/prompt facts, the Casino and Fishing Guild houses, the
+the Royal Shop and kits, Gilbert configuration/prompt facts, the Casino and
+Fishing Guild houses, the
 `/daily` race, the daily Turso mirror/AI-guide config, the creation race, the
 wallet-deletion lifecycle, the runner's own
-false-pass guard and a cog-load smoke test. All **21** pass as of 2026-11-06
+false-pass guard and a cog-load smoke test. All **22** pass as of 2026-11-06
 (`check_casino.py` also drives `/poker` end to end, `check_fishing.py` drives
-`/fish`, and `check_factions.py` drives the faction/Crown commands; 
+`/fish`, `check_shop.py` drives `/shop` and `/kit`, and `check_factions.py`
+drives the faction/Crown commands; 
 `check_contracts.py` drives a real Crown request, the Crown-funded claim and the
 per-faction quota). All of them work on throwaway SQLite
 files, so they never touch the live database. The runner only accepts a
@@ -116,11 +118,14 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 ### Last known live state
 
 2026-11-06 (**live on cline-pass; deployed and running**). Working tree clean;
-**21/21**, `compileall`/`pyflakes` clean, surface **114 commands / 16 cogs**.
+**22/22**, `compileall`/`pyflakes` clean, surface **114 commands / 16 cogs**.
 The process restarted at **19:13 UTC**, so everything below is *running*, not
 pending: `daily_guide.md` regenerated at 19:15 with **24,502 characters**, all
 nine sections, dues stated as 1.75%/2%, quota as 1/3, and no "50% dues" — proof
-that the gateway, key, overrides and RULES block all work.
+that the gateway, key, overrides and RULES block all work. A later audit
+(19:35 UTC) found the tree byte-identical to the host and added
+`checks/check_shop.py`, the missing Royal Shop/kit check; no bot code changed,
+so no restart was needed.
 
 Live `.env`: `CHATBOT_API_URL=https://api.cline.bot/api/v1`,
 `CHATBOT_MODEL=cline-pass/deepseek-v4.1-flash-1017` (0.75, 16,000 tokens, 240 s),
@@ -1119,11 +1124,12 @@ consistent.
   section 9 item 10).
 - Contracts approved before `/contract setboard` was configured have no board
   message; they can still be claimed with `/contract claim`.
-- The `checks/` suite **is** the automated test suite: 21 standalone scripts run
+- The `checks/` suite **is** the automated test suite: 22 standalone scripts run
   by `python3 checks/run_all.py`. They cover ledger rollback, payout cycles,
   transfer routing in all nine directions, leverage boundaries, contract
   claim/quota/approval races, draws, Union guards, membership, dues, pricing,
-  commitments, the `/union` surface, faction switching, Crown tax and supplier
+  the Royal Shop and kit checkout, commitments, the `/union` surface, faction
+  switching, Crown tax and supplier
   contracts, the individual cap, `/daily`, data deletion, leaderboards, the kit
   cooldown, coinflip/all-in/slots/roulette/blackjack/poker/fishing, the daily
   Turso mirror and
