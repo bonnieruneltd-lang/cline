@@ -115,18 +115,23 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 
 ### Last known live state
 
-2026-11-06 (**session close-out**). Working tree `fce0e4c`, clean and pushed; live
-tree **86 files**, all byte-identical except the generated `daily_guide.md`;
-**21/21**, `compileall`/`pyflakes` clean, **114 / 16** pinned. The only outstanding
-action for the `/slots` + `/roulette` release is the **panel restart** — the
-process still serves 112 commands until then. Six live shop orders still hold
-unused `RC-…` keys. The Forge mod target was pinned by the owner to
+2026-11-06 (**full-file audit; the 114-command build is live**). Working tree
+`316964b` plus this docs commit, clean and pushed; live tree **85 project files**,
+all SHA-256 identical to this checkout (plus the generated `daily_guide.md`,
+`.env` and the database); **21/21**, `compileall`/`pyflakes` clean, **114 / 16**
+pinned. **The panel restart has happened** — the host opened the live database at
+15:12:26 UTC, ran the mirror + guide at 15:13 and the Discord command list now
+carries all **114** commands, `/slots` and `/roulette` included, matching this
+checkout command for command. Do not restart again for that release; nothing is
+outstanding for it. The live database passes `integrity_check`, reconciles to the
+ledger on every account and still holds the six unused `RC-…` orders. The Forge
+mod target was pinned by the owner to
 **Minecraft 1.20.1 / Forge 47.x** and `forge-mod/README.md` was corrected (stale
 `410` contract section) and extended with the verified redeem payload, the
 item-key families, the gaps and a build order. New known gap: no `POST
 /api/preview`, so nothing can show a key's contents before spending it.
 
-2026-11-06 (**`/slots` and `/roulette` uploaded; restart pending**). Two new
+2026-11-06 (**`/slots` and `/roulette` — restart completed 15:12 UTC**). Two new
 one-shot Casino games, both settled through `casino.begin_wager()` /
 `finish_wager()` in a single transaction: `/slots` (three weighted reels, three of
 a kind pays 16x–250x, exact return `58,382/64,000` = **8.78% edge**) and
@@ -136,8 +141,8 @@ new cards in `gambling_ui.py`, new ledger kinds `individual_slots` /
 `individual_roulette`, and `/allin`'s ledger emoji moved 🎰 → 🎲 so the machine
 owns 🎰. The surface is now **114 commands / 16 cogs** and the suite is **21/21**
 (new `checks/check_slots.py`, `checks/check_roulette.py`; `check_cogs.py` pins
-114 and both commands' options). **The process still serves 112 commands until it
-is restarted**, and a restart is what loads the new code — nothing here touches
+114 and both commands' options). **The process was restarted at 15:12 UTC and
+serves all 114 commands**, and nothing here touches
 the schema, so the live database needs no migration.
 
 2026-11-06 (**re-audit; docs-only upload, live code unchanged since the

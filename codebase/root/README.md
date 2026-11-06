@@ -414,7 +414,7 @@ Every source file and what it is for. Sub-packages have their own README.
 | `checks/check_fishing.py` | `/fish` range/refusals, Fishing Guild guarded balance, end-to-end catch and ledger, cap/short-guild refusals, admin funding |
 | `checks/check_poker.py` | Poker evaluator (category order, wheel, best five of seven), side pots, uncalled-bet refunds, short all-ins not reopening raises, odd chips, blinds and the big blind's option, 400 seeded hands with chips conserved |
 | `checks/check_gilbert.py` | Gilbert config normalisation (DeepSeek model alias/base URL), prompt tier/context facts, disabled-without-key |
-| `checks/check_cogs.py` | Concurrent `/daily` claims plus import and cog-load smoke test (112 commands, 16 cogs) |
+| `checks/check_cogs.py` | Concurrent `/daily` claims plus import and cog-load smoke test (114 commands, 16 cogs) |
 | `checks/check_creation_race.py` | Concurrent creation must produce exactly one account and one bonus row; approval and direct-add name races close cleanly |
 | `checks/check_runner.py` | The runner rejects an exception or bare exit with no summary instead of reporting a false pass |
 
@@ -1208,15 +1208,61 @@ it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
 
-### 2026-11-06 — Session close-out: `/slots` + `/roulette` live, Forge target pinned (docs uploaded; **restart still required for the games**)
+### 2026-11-06 — Full-file audit: the live process is on the 114-command build (docs only)
+
+**What was checked.** Every file in this checkout and on the SFTP host, the whole
+`checks/` suite, the live database (pulled as `.db` + `-wal` + `-shm`) and the
+live Discord command surface. **No defect was found.** One stale note was
+corrected: the close-out entry below still said the restart was outstanding. It
+is not — it happened at **15:12 UTC**, and `/slots` and `/roulette` are answering
+in Discord.
+
+- Working tree `316964b` plus this docs commit, clean; `checks/run_all.py`
+  **21/21**, `compileall` and `pyflakes` clean.
+- Live tree: **85 project files** (`*.py`, `checks/`, `cogs/`, `shop/`,
+  `gilbert/`, `forge-mod/`, `royal-bot/`, the docs, `Procfile`,
+  `requirements.txt`, `.gitignore`) plus the generated `daily_guide.md`, the
+  `.env` and the live database. Every one of the 85 is **SHA-256 identical** to
+  this checkout; only the runtime artefacts differ, which is by design.
+- **The restart has happened.** The host opened the live database at
+  **2026-11-06 15:12:26 UTC**, wrote `turso-tmp/last_sync.json` at **15:13:26**
+  and regenerated `daily_guide.md` at **15:13:34** (the run-on-start mirror and
+  guide), and `GET /applications/<id>/guilds/<guild>/commands` now returns
+  **23 top-level commands covering 100 leaf commands + 14 groups = 114**, with
+  `/slots` and `/roulette` present. Comparing that payload, command by command,
+  with a fresh `RoyalCourt()` built from this checkout: no command, subcommand,
+  option name, required flag or type differs (only the API's integer type codes
+  vs `OptionType` names). Nothing awaits a panel restart.
+- Live database: `PRAGMA integrity_check` **ok**, `foreign_key_check` empty, and
+  all **25** live accounts reconcile exactly to `transactions` (nations 12,
+  kingdoms 3, individuals 6, plus Union, Crown, Casino and Fishing Guild) with
+  **0** gaps. The only unmatched ledger rows are the two null-`account_id`
+  groups (status-only `nation_request` / `kingdom_request` notes, summing to 0)
+  and deleted nation 5 (its 30,000 creation bonus still sits in the log).
+- Unchanged and still correct: the six pending shop orders carry unused
+  `RC-…` keys; the four contracts are `UN-COMMUN-001` completed and fully
+  claimed, `UN-SOVERE-001` approved with its 25% claimed, `UN-SOVERE-002`
+  reopened (`negotiating`, upfront kept, nothing re-payable), `UN-SOVERE-003`
+  closed; the four active Union commitments, the six wallets, twelve nations and
+  three kingdoms are intact; every blackjack and poker hand row is `settled`.
+
+**Changed.** Docs only, no code: this entry; the close-out entry below (its
+restart line now records the observed restart); `AGENTS.md` "last known live
+state"; the stale `112 commands` count in the section 5 check table; and the
+`check_cogs.py` row in `BUG-FIXES.md`. The three files were uploaded with
+`.bak-20261106-…` backups and verified by SHA-256 against this tree.
+
+### 2026-11-06 — Session close-out: `/slots` + `/roulette` live, Forge target pinned (docs uploaded; restart completed 15:12 UTC)
 
 **State at close.** The working tree is `fce0e4c` and clean; the live tree is **86
 files**, byte-identical to it except the generated `daily_guide.md`;
 `checks/run_all.py` **21/21**, `compileall` and `pyflakes` clean; surface pinned at
-**114 commands / 16 cogs**. The two new games are uploaded with
-`.bak-20261106-145803` backups — **the running process still serves 112 commands
-until someone restarts it from the panel**, and that restart is the only thing
-outstanding for this release. No schema change, so nothing to migrate. All six
+**114 commands / 16 cogs**. The two new games were uploaded with
+`.bak-20261106-145803` backups. **The panel restart that loaded them has since
+happened** (live database opened 2026-11-06 15:12:26 UTC, run-on-start mirror and
+guide at 15:13; the Discord command list now shows 114 commands including
+`/slots` and `/roulette`) — see the audit entry above. No schema change, so
+nothing to migrate. All six
 pending shop orders in the live database still carry unused `RC-…` keys
 (`RC-B9D30B-0A63C8`, `RC-D0F192-D79BF2`, `RC-24C1C1-6D57BA`, `RC-7ECB46-DF4892`,
 `RC-63E72C-4BD927`, `RC-234C9F-FCE893`) worth 4,322,250 / 137,250 / 512 / 1,024 /
