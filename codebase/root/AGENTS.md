@@ -35,11 +35,11 @@ python3 -m pyflakes .             # unused names / undefined references
 isolation, contract lifecycle/quota/approval/case-ID guards, individual
 transfers, unified all-direction transfers, the per-run tax cycle (including
 stale-list and recreated-wallet races), bank/draw guards, factions/Crown
-contracts and tax, coinflip, all-in, blackjack, fishing, poker, Gilbert
-configuration/prompt facts, the Casino and Fishing Guild houses, the `/daily`
-race, the daily Turso mirror/AI-guide config, the creation race, the
+contracts and tax, coinflip, all-in, slots, roulette, blackjack, fishing, poker,
+Gilbert configuration/prompt facts, the Casino and Fishing Guild houses, the
+`/daily` race, the daily Turso mirror/AI-guide config, the creation race, the
 wallet-deletion lifecycle, the runner's own
-false-pass guard and a cog-load smoke test. All **19** pass as of 2026-10-29
+false-pass guard and a cog-load smoke test. All **21** pass as of 2026-11-06
 (`check_casino.py` also drives `/poker` end to end, `check_fishing.py` drives
 `/fish`, and `check_factions.py` drives the faction/Crown commands; 
 `check_contracts.py` drives a real Crown request, the Crown-funded claim and the
@@ -48,8 +48,9 @@ files, so they never touch the live database. The runner only accepts a
 recognised summary line as well as exit 0; a bare exit or an `ERROR:` line is a
 failure.
 The cog-load check also asserts the command count: `bot.tree.walk_commands()`
-must list **112** commands and `COGS` must have 16 entries, asserted by
-`checks/check_cogs.py` (**112 = 111 + `/give`**; 111 = 113 - `/faction audience`
+must list **114** commands and `COGS` must have 16 entries, asserted by
+`checks/check_cogs.py` (**114 = 112 + `/slots` and `/roulette`**; 112 = 111 +
+`/give`; 111 = 113 - `/faction audience`
 and the two specialized contract subcommands + `/faction contract`. 113 was the
 `/faction` group's sixteen action subcommands; 97 was the single `/faction`
 command. `/contract` remains the contract-lifecycle group. 107 = 104 + `/payout
@@ -63,7 +64,7 @@ moves, a command was added or lost — update the assertion deliberately, never
 by editing the script to match whatever it printed.
 `daily_sync.py` (the daily Turso mirror + AI guide) is started from `bot.py` the
 same way `api.py` is: it is **not** a cog, so it adds no commands and leaves the
-112 / 16 assertions untouched. The mirror has its own token (`TURSO_AUTH_TOKEN`),
+114 / 16 assertions untouched. The mirror has its own token (`TURSO_AUTH_TOKEN`),
 its own runtime (`TURSO_RUN_*`) and its own temp dir (`TURSO_TEMP_DIR`, where it
 writes `last_sync.json`); the guide uses `DAILY_*`. Gilbert and Albert now read
 the shared **chat-bot** config (`CHATBOT_*`); the legacy `AI_*` names still work
@@ -113,6 +114,20 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 `transactions` rows that the bot could see).
 
 ### Last known live state
+
+2026-11-06 (**`/slots` and `/roulette` uploaded; restart pending**). Two new
+one-shot Casino games, both settled through `casino.begin_wager()` /
+`finish_wager()` in a single transaction: `/slots` (three weighted reels, three of
+a kind pays 16x–250x, exact return `58,382/64,000` = **8.78% edge**) and
+`/roulette` (European single-zero, colours/dozens/columns/straight up, flat
+**2.70% edge** on every bet shape). New pure modules `slots.py` and `roulette.py`,
+new cards in `gambling_ui.py`, new ledger kinds `individual_slots` /
+`individual_roulette`, and `/allin`'s ledger emoji moved 🎰 → 🎲 so the machine
+owns 🎰. The surface is now **114 commands / 16 cogs** and the suite is **21/21**
+(new `checks/check_slots.py`, `checks/check_roulette.py`; `check_cogs.py` pins
+114 and both commands' options). **The process still serves 112 commands until it
+is restarted**, and a restart is what loads the new code — nothing here touches
+the schema, so the live database needs no migration.
 
 2026-11-06 (**re-audit; docs-only upload, live code unchanged since the
 `20261029-0216` + daily-sync builds**). Swept the whole host from SFTP against
@@ -1005,13 +1020,14 @@ consistent.
 - Forge mod (`forge-mod/` is a README only).
 - Contracts approved before `/contract setboard` was configured have no board
   message; they can still be claimed with `/contract claim`.
-- The `checks/` suite **is** the automated test suite: 19 standalone scripts run
+- The `checks/` suite **is** the automated test suite: 21 standalone scripts run
   by `python3 checks/run_all.py`. They cover ledger rollback, payout cycles,
   transfer routing in all nine directions, leverage boundaries, contract
   claim/quota/approval races, draws, Union guards, membership, dues, pricing,
   commitments, the `/union` surface, faction switching, Crown tax and supplier
   contracts, the individual cap, `/daily`, data deletion, leaderboards, the kit
-  cooldown, coinflip/all-in/blackjack/poker/fishing, the daily Turso mirror and
+  cooldown, coinflip/all-in/slots/roulette/blackjack/poker/fishing, the daily
+  Turso mirror and
   AI-guide configuration, and the cog-load smoke test.
   `BUG-FIXES.md` lists every check and what it proves.
 - The Turso mirror is **append-only**. `Database.delete_individual()` erases a

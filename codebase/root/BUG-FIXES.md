@@ -1630,6 +1630,8 @@ python3 -m pyflakes .          # unused names, undefined references
 | `checks/check_factions.py` | faction switching and Union-commit/contract cleanup, open Crown membership (no soldier gate), a non-member Crown contract request through `/faction contract`, the removed RNG helpers, Crown tax/grace, contract capacity, requested-budget ceilings and treasury value caps, partial/full delivery, demand decay, expiry, short-Crown rollback, Albert context, and the `/faction` join/contract/commitment/deliver/status callbacks |
 | `checks/check_coinflip.py` | coinflip odds are exactly 50% over all 10,000 rolls for either call, zero house edge, stake guards, cap refusal, refusal never rolls or moves money, ledger reconciles |
 | `checks/check_allin.py` | all-in odds exhausted for every number 2-100, expected return flat at 10/11, house edge 1/11, n=1 refusal, cap and balance refusals, no draw on refusal, duplicate confirmation refused, ledger reconciles |
+| `checks/check_slots.py` | the slots paytable priced by brute force over all 64,000 reel outcomes against `expected_return()`, the 8.78% edge, three of a kind vs a pair, the 250x jackpot reserve, the cap/max/min refusals, conservation and both ledger sides |
+| `checks/check_roulette.py` | the layout (colours, dozens and columns tile 1-36, zero in nothing), every bet shape priced over all 37 pockets at exactly 36/37, straight-up and zero settlement, the per-bet cap refusal, conservation and both ledger sides |
 | `checks/check_casino.py` | blackjack rules (including multi-ace soft hands) and every settlement branch, house solvency and floor, conservation over 200 wagers, restart refund, double-settle guard, open-hand delete guard and no wallet resurrection, public posts |
 | `checks/check_fishing.py` | `/fish` random 20–100 range, pure cap/short-guild refusals, guarded Fishing Guild balance, end-to-end catch, both ledger sides, conservation, no-wallet and admin fund/withdraw |
 | `checks/check_poker.py` | evaluator category order, wheel, best five of seven, side pots and odd chips, uncalled-bet refunds, folded seats never paid, short all-ins not reopening raises, blind posting and the big blind's option, flop resets without losing the pot, 400 seeded hands with chips conserved and every hand terminating |
@@ -1643,7 +1645,7 @@ Every script builds its own throwaway SQLite database in a temp directory. None
 of them read `royal_bank.db`, so the live file is never touched.
 `check_poker.py` needs no database at all: `poker.py` is pure.
 
-All 19 scripts pass as of 2026-11-06, against the working copy. When you fix a
+All 21 scripts pass as of 2026-11-06, against the working copy. When you fix a
 bug, add its check here — a fix without a check is how the
 transaction-isolation defect survived this long.
 
@@ -1657,7 +1659,7 @@ transaction-isolation defect survived this long.
 | Individuals | 100M cap (partial and full), overdraw guard, deletion erases wallet + ledger rows, open-hand delete guard, no resurrection on settlement |
 | `/daily` | first claim, 24h cooldown, +10%/day, 400% cap, -20%/missed day, 60% floor, concurrent claims once, cap-trimmed payout |
 | Payout tax | natural + manual runs, stale-list re-read, deleted/recreated wallet id, ledger both sides, disable switch |
-| Gambling | coinflip 50% / zero edge, all-in 10/11 / 1/11 edge, blackjack branches, poker side pots/uncalled refunds/short all-ins, conservation |
+| Gambling | coinflip 50% / zero edge, all-in 10/11 / 1/11 edge, slots paytable 58,382/64,000, roulette 36/37 on every bet shape and the zero taking outside bets, blackjack branches, poker side pots/uncalled refunds/short all-ins, conservation |
 | Leaderboards | nation, kingdom and individual queries and embeds stay separate and ordered |
 | One-shot guards | petition flip, draw/creation status, contract double-approval, kit cooldown, concurrent case numbers |
 | Live data | `integrity_check`, per-account and Union ledger reconciliation, union and individuals schema present, pre-fix dues rows identified |
@@ -1666,4 +1668,4 @@ transaction-isolation defect survived this long.
 | Runner | summary required; bare exit/ERROR is a failure |
 | Daily sync | endpoint/value encoding, idempotent DDL, guide source and fallback, `guild_id`, run-on-start switches, disabled without credentials |
 
-All 19 scripts pass. When you add a check, add it to this table.
+All 21 scripts pass. When you add a check, add it to this table.

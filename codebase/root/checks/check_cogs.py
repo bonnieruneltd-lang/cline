@@ -1,9 +1,9 @@
-"""Daily-claim concurrency plus import/cog-load smoke test (expects 112 commands)."""
+"""Daily-claim concurrency plus import/cog-load smoke test (expects 114 commands)."""
 import asyncio, os, sys, tempfile, datetime as dt
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
 from database import Database
-import daily, config
+import daily, config, roulette
 
 
 async def daily_concurrency():
@@ -66,7 +66,8 @@ async def cog_smoke():
         # subcommands + the single /faction contract request subcommand. Each
         # action exposes only its own options; /contract remains the lifecycle
         # group. 112 adds the top-level /give treasury-to-member grant.
-        assert n == 112, f"expected 112 commands, found {n}"
+        # 114 = 112 + the two casino games /slots and /roulette.
+        assert n == 114, f"expected 114 commands, found {n}"
         assert len(COGS) == 16, f"expected 16 cogs, found {len(COGS)}"
         names = {command.qualified_name for command in bot.tree.walk_commands()}
         for required in (
@@ -74,6 +75,7 @@ async def cog_smoke():
             "faction join", "faction contract", "faction commitment",
             "faction uncommit", "faction status", "faction fund",
             "faction withdraw", "faction setchannel",
+            "slots", "roulette",
         ):
             assert required in names, f"missing command {required}"
         # /give is the treasury-to-member shortcut: a nation/kingdom source, a
@@ -93,6 +95,31 @@ async def cog_smoke():
         )
         contract_params = {param.name for param in contract_cmd.parameters}
         assert contract_params == {"faction", "account", "proposal", "budget"}, contract_params
+        # The two casino games expose exactly what they need: /slots stakes only,
+        # /roulette stakes, a bet choice and the optional straight-up number.
+        slots_cmd = next(
+            command for command in bot.tree.walk_commands()
+            if command.qualified_name == "slots"
+        )
+        assert {param.name for param in slots_cmd.parameters} == {"amount"}
+        roulette_cmd = next(
+            command for command in bot.tree.walk_commands()
+            if command.qualified_name == "roulette"
+        )
+        assert {param.name for param in roulette_cmd.parameters} == {
+            "amount", "bet", "number"
+        }, roulette_cmd.parameters
+        bet_param = next(
+            param for param in roulette_cmd.parameters if param.name == "bet"
+        )
+        assert {choice.value for choice in bet_param.choices} == set(roulette.BET_KINDS), (
+            [choice.value for choice in bet_param.choices]
+        )
+        number_param = next(
+            param for param in roulette_cmd.parameters if param.name == "number"
+        )
+        # Optional on purpose: only a straight-up bet carries a number.
+        assert number_param.required is False, number_param
         for old in (
             "join", "commit", "donate", "audience", "crown", "union",
             "crown status", "crown contracts", "crown cancel", "crown fund",

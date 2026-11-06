@@ -132,6 +132,103 @@ def allin_result(
     return _footer(embed, "⚜ Royal Court Casino · all-in is final · public table")
 
 
+def slots_result(
+    *,
+    user_mention: str,
+    machine: str,
+    result: str,
+    near_miss: str | None,
+    stake: int,
+    gross: int,
+    balance: int,
+    house: int,
+    won: bool,
+    multiple: int,
+    chance: str,
+    edge: str,
+) -> discord.Embed:
+    """The three-reel card. ``machine`` is the reel line, e.g. ``🍒 │ 🍋 │ 🍒``."""
+    title = "🎰 SLOTS · You Win" if won else "🎰 SLOTS · No Match"
+    color = config.GOLD_COLOR if won else config.RED_COLOR
+    net = gross - stake if won else -stake
+    if won:
+        story = (
+            f"{user_mention} lined up {result} — **{multiple}×** — and the Casino "
+            f"pays **{money(gross)}** across the table."
+        )
+    elif near_miss:
+        story = (
+            f"{user_mention} hit {near_miss} — so close — but the reels have to "
+            "match three deep. The stake stays with the house."
+        )
+    else:
+        story = (
+            f"{user_mention} came up with {result}. The stake stays with the house."
+        )
+    embed = discord.Embed(
+        title=title,
+        description=f"## {machine}\n{story}",
+        color=color,
+    )
+    embed.add_field(name="Stake", value=money(stake), inline=True)
+    embed.add_field(name="Return", value=money(gross) if won else "—", inline=True)
+    embed.add_field(name="Net", value=f"{net:+,}", inline=True)
+    embed.add_field(name="Player Wallet", value=money(balance), inline=True)
+    embed.add_field(name="Casino Stack", value=money(house), inline=True)
+    embed.add_field(name="The Floor", value=SPECTATOR_HINT, inline=False)
+    return _footer(
+        embed,
+        f"⚜ Royal Court Casino · three of a kind pays · {chance} odds · "
+        f"house keeps {edge}",
+    )
+
+
+def roulette_result(
+    *,
+    user_mention: str,
+    bet_label: str,
+    odds_label: str,
+    pocket: int,
+    colour: str,
+    stake: int,
+    gross: int,
+    balance: int,
+    house: int,
+    won: bool,
+) -> discord.Embed:
+    """The wheel card. ``bet_label`` and ``odds_label`` describe the bet placed."""
+    title = "🎡 ROULETTE · You Win" if won else "🎡 ROULETTE · You Lose"
+    color = config.GOLD_COLOR if won else config.RED_COLOR
+    net = gross - stake if won else -stake
+    zero = " The green zero takes every outside bet — that is the house edge." if colour == "green" else ""
+    story = (
+        f"{user_mention} backed **{bet_label}** at {odds_label} and the ball "
+        f"landed on **{pocket}** ({colour}).\n"
+        + (
+            f"The Casino pays **{money(gross)}**."
+            if won
+            else "The stake slides into the Casino's stack."
+        )
+        + zero
+    )
+    embed = discord.Embed(
+        title=title,
+        description=f"## {pocket}\n{story}",
+        color=color,
+    )
+    embed.add_field(name="Bet", value=f"{bet_label} · {odds_label}", inline=True)
+    embed.add_field(name="Pocket", value=f"{pocket} ({colour})", inline=True)
+    embed.add_field(name="Stake", value=money(stake), inline=True)
+    embed.add_field(name="Return", value=money(gross) if won else "—", inline=True)
+    embed.add_field(name="Net", value=f"{net:+,}", inline=True)
+    embed.add_field(name="Player Wallet", value=money(balance), inline=True)
+    embed.add_field(name="Casino Stack", value=money(house), inline=True)
+    embed.add_field(name="The Floor", value=SPECTATOR_HINT, inline=False)
+    return _footer(
+        embed, "⚜ Royal Court Casino · single-zero wheel · 2.70% house edge · public table"
+    )
+
+
 def _clip(text: str, limit: int = 1024) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
@@ -255,6 +352,8 @@ def casino_floor(house: int) -> discord.Embed:
         value=(
             "🪙 **`/individual coinflip`** — call the coin · 50% win · 2×\n"
             "🎰 **`/allin`** — whole wallet, one draw · 2–100×\n"
+            "🍒 **`/slots`** — three reels · three of a kind pays · up to 250×\n"
+            "🎡 **`/roulette`** — single-zero wheel · 35:1 straight up · 2.70% edge\n"
             "🃏 **`/blackjack`** — hit or stand · natural pays 3:2\n"
             "♠️ **`/poker`** — four-seat Texas Hold'em · 200 minimum"
         ),

@@ -1,7 +1,8 @@
 """
 cogs/games.py
 =============
-The Casino: ``/blackjack`` and the house account every wager settles against.
+The Casino: ``/blackjack``, ``/poker``, ``/slots``, ``/roulette`` and the house
+account every wager settles against.
 
 The Casino is the counterparty for gambling, the same way the Workers' Union is
 the counterparty for contracts. A losing bet credits it, a winning bet is paid
@@ -18,6 +19,12 @@ house bots. The buy-in is held by the Casino and the player is paid their final
 chip stack, including chips left after a losing hand. The table is in memory,
 so ``poker_hands`` exists solely so startup can refund a process that died
 mid-hand.
+
+``/slots`` and ``/roulette`` are one-shot games: the stake and the payout settle
+in a single transaction, so there is nothing to hold between steps and no row to
+refund. Both reserve their *worst case* before the reels turn or the ball drops -
+the 250x jackpot and the 36x straight up - because the house has to be able to
+pay any result, not the average one.
 """
 
 from __future__ import annotations
@@ -35,6 +42,8 @@ import embeds
 import gambling_ui
 import poker
 import poker_names
+import roulette
+import slots
 from checks import admin_only
 from database import AccountMissing, CapExceeded, InsufficientFunds
 from utils import money, parse_amount
@@ -893,6 +902,304 @@ class Casino(commands.Cog):
             view.message = await interaction.original_response()
         except Exception:
             view.message = None
+
+
+    # ------------------------------------------------------------------
+    # Slots
+    # ------------------------------------------------------------------
+    @app_commands.command(
+        name="slots",
+        description="Spin the Royal three-reel machine. Three of a kind pays up to 250×.",
+    )
+    @app_commands.describe(
+        amount="Credits to stake, or all / half / quarter of your balance.",
+    )
+    async def slots(self, interaction: discord.Interaction, amount: str):
+        if interaction.guild_id is None:
+            return await interaction.response.send_message(
+                embed=embeds.error("Guild Only", "The Casino only runs inside a server."),
+                ephemeral=True,
+            )
+
+        wallet = await self.db.find_individual(interaction.guild_id, interaction.user.id)
+        if wallet is None:
+            return await interaction.response.send_message(
+                embed=embeds.info(
+                    "No Wallet",
+                    "You have no individual balance yet. Claim your first credits with `/daily`.",
+                ),
+                ephemeral=True,
+            )
+
+        balance = int(wallet["balance"])
+        try:
+            stake = parse_amount(amount, balance)
+        except ValueError as exc:
+            return await interaction.response.send_message(
+                embed=embeds.error("Invalid Amount", str(exc)), ephemeral=True
+            )
+
+        problem = slots.stake_problem(stake, balance)
+        if problem:
+            return await interaction.response.send_message(
+                embed=embeds.error("Bet Refused", problem), ephemeral=True
+            )
+
+        house = await self.db.get_casino_balance(interaction.guild_id)
+        # The house must cover the *jackpot*, not the average spin: a 250x symbol
+        # can land on any pull, so the worst case is what gets reserved.
+        cover = casino.wager_problem(
+            stake=stake,
+            balance=balance,
+            gross=slots.max_gross(stake),
+            house=house,
+            minimum=config.SLOTS_MIN_STAKE,
+        )
+        if cover:
+            return await interaction.response.send_message(
+                embed=embeds.error("Bet Refused", cover), ephemeral=True
+            )
+
+        reels = slots.spin()
+        multiple = slots.multiplier(reels)
+        won = multiple > 0
+        gross = slots.gross_payout(reels, stake)
+        detail = (
+            f"{slots.label(reels)} · {multiple}×"
+            if won
+            else f"{slots.label(reels)} · no match"
+        )
+
+        try:
+            # Stake into the house and payout out of it in one transaction, so a
+            # spin can never take the stake without settling.
+            async with self.db.transaction():
+                await casino.begin_wager(
+                    self.db,
+                    guild_id=interaction.guild_id,
+                    wallet=wallet,
+                    stake=stake,
+                    kind="individual_slots",
+                    actor_id=interaction.user.id,
+                    note=f"Slots stake · {detail}",
+                )
+                after, house_after = await casino.finish_wager(
+                    self.db,
+                    guild_id=interaction.guild_id,
+                    wallet=wallet,
+                    stake=stake,
+                    gross=gross,
+                    outcome="win" if won else "loss",
+                    kind="individual_slots",
+                    actor_id=interaction.user.id,
+                    note=f"Slots · {detail}",
+                )
+        except InsufficientFunds:
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "Insufficient Funds",
+                    f"You only hold **{money(balance)}** in your individual balance.",
+                ),
+                ephemeral=True,
+            )
+        except AccountMissing:
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "No Wallet",
+                    "Your individual wallet was erased before the spin landed. Nothing was staked.",
+                ),
+                ephemeral=True,
+            )
+        except CapExceeded:
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "Bet Refused",
+                    "A win would take you past the individual cap. Nothing was staked.",
+                ),
+                ephemeral=True,
+            )
+
+        embed = gambling_ui.slots_result(
+            user_mention=interaction.user.mention,
+            machine=slots.label(reels),
+            result=slots.names(reels),
+            near_miss=slots.partial(reels),
+            stake=stake,
+            gross=gross,
+            balance=after,
+            house=house_after,
+            won=won,
+            multiple=multiple,
+            chance=slots.chance_label(),
+            edge=slots.edge_label(),
+        )
+        await interaction.response.send_message(embed=embed)
+        try:
+            message = await interaction.original_response()
+        except Exception:
+            message = None
+        await gambling_ui.add_spectator_reactions(message, good=won)
+
+
+    # ------------------------------------------------------------------
+    # Roulette
+    # ------------------------------------------------------------------
+    @app_commands.command(
+        name="roulette",
+        description="Bet on the single-zero wheel: a colour, odd/even, low/high, a dozen, a column or a number.",
+    )
+    @app_commands.describe(
+        amount="Credits to stake, or all / half / quarter of your balance.",
+        bet="What to back on the wheel.",
+        number="Only for a straight-up bet: 0–36.",
+    )
+    @app_commands.choices(
+        bet=[
+            app_commands.Choice(name=label, value=value)
+            for label, value in roulette.CHOICES
+        ]
+    )
+    async def roulette(
+        self,
+        interaction: discord.Interaction,
+        amount: str,
+        bet: app_commands.Choice[str],
+        number: app_commands.Range[int, 0, 36] = None,
+    ):
+        if interaction.guild_id is None:
+            return await interaction.response.send_message(
+                embed=embeds.error("Guild Only", "The Casino only runs inside a server."),
+                ephemeral=True,
+            )
+
+        try:
+            placed = roulette.make_bet(bet.value, number)
+        except ValueError as exc:
+            return await interaction.response.send_message(
+                embed=embeds.error("Invalid Bet", str(exc)), ephemeral=True
+            )
+        if number is not None and placed.kind != roulette.STRAIGHT:
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "Invalid Bet",
+                    f"`number` only applies to a straight-up bet, and you backed "
+                    f"**{placed.label}**. Drop the number or choose Straight up.",
+                ),
+                ephemeral=True,
+            )
+
+        wallet = await self.db.find_individual(interaction.guild_id, interaction.user.id)
+        if wallet is None:
+            return await interaction.response.send_message(
+                embed=embeds.info(
+                    "No Wallet",
+                    "You have no individual balance yet. Claim your first credits with `/daily`.",
+                ),
+                ephemeral=True,
+            )
+
+        balance = int(wallet["balance"])
+        try:
+            stake = parse_amount(amount, balance)
+        except ValueError as exc:
+            return await interaction.response.send_message(
+                embed=embeds.error("Invalid Amount", str(exc)), ephemeral=True
+            )
+
+        problem = roulette.stake_problem(placed, stake, balance)
+        if problem:
+            return await interaction.response.send_message(
+                embed=embeds.error("Bet Refused", problem), ephemeral=True
+            )
+
+        house = await self.db.get_casino_balance(interaction.guild_id)
+        # A straight up returns 36x, so that is the worst case reserved here even
+        # when the bet placed is an even-money one.
+        cover = casino.wager_problem(
+            stake=stake,
+            balance=balance,
+            gross=roulette.max_gross(stake),
+            house=house,
+            minimum=config.ROULETTE_MIN_STAKE,
+        )
+        if cover:
+            return await interaction.response.send_message(
+                embed=embeds.error("Bet Refused", cover), ephemeral=True
+            )
+
+        pocket = roulette.spin()
+        won = roulette.resolve(placed, pocket)
+        gross = roulette.gross_payout(placed, stake, won)
+        detail = (
+            f"{placed.label} at {placed.odds_label} · "
+            f"ball {pocket} {roulette.colour(pocket)}"
+        )
+
+        try:
+            async with self.db.transaction():
+                await casino.begin_wager(
+                    self.db,
+                    guild_id=interaction.guild_id,
+                    wallet=wallet,
+                    stake=stake,
+                    kind="individual_roulette",
+                    actor_id=interaction.user.id,
+                    note=f"Roulette stake · {detail}",
+                )
+                after, house_after = await casino.finish_wager(
+                    self.db,
+                    guild_id=interaction.guild_id,
+                    wallet=wallet,
+                    stake=stake,
+                    gross=gross,
+                    outcome="win" if won else "loss",
+                    kind="individual_roulette",
+                    actor_id=interaction.user.id,
+                    note=f"Roulette · {detail}",
+                )
+        except InsufficientFunds:
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "Insufficient Funds",
+                    f"You only hold **{money(balance)}** in your individual balance.",
+                ),
+                ephemeral=True,
+            )
+        except AccountMissing:
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "No Wallet",
+                    "Your individual wallet was erased before the ball landed. Nothing was staked.",
+                ),
+                ephemeral=True,
+            )
+        except CapExceeded:
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "Bet Refused",
+                    "A win would take you past the individual cap. Nothing was staked.",
+                ),
+                ephemeral=True,
+            )
+
+        embed = gambling_ui.roulette_result(
+            user_mention=interaction.user.mention,
+            bet_label=placed.label,
+            odds_label=placed.odds_label,
+            pocket=pocket,
+            colour=roulette.colour(pocket),
+            stake=stake,
+            gross=gross,
+            balance=after,
+            house=house_after,
+            won=won,
+        )
+        await interaction.response.send_message(embed=embed)
+        try:
+            message = await interaction.original_response()
+        except Exception:
+            message = None
+        await gambling_ui.add_spectator_reactions(message, good=won)
 
 
     # ------------------------------------------------------------------

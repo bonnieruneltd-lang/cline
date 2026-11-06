@@ -116,10 +116,12 @@ still local-only.
 | Casino house account | DONE | `/casino balance`, `/casino fund`, `/casino withdraw`; every wager settles against it |
 | Coinflip gambling | DONE | `/individual coinflip`: 50% win, 2x payout, fair pass-through, public |
 | All-in gamble | DONE | `/allin`: whole wallet on one draw, n-times payout at 1 in (1.1n), public |
+| Slots | DONE | `/slots amount`: three weighted reels, three of a kind pays 16x–250x, 8.78% edge, public |
+| Roulette | DONE | `/roulette amount bet [number]`: single-zero wheel, colours/odd-even/low-high/dozens/columns/straight up, flat 2.70% edge, public |
 | Fishing | DONE | `/fish`: random 20–100 credit catch paid by the Fishing Guild, public |
 | Fishing Guild house account | DONE | `/fishingguild balance`, `fund` [Admin], `withdraw` [Admin]; every catch debits it |
 | Blackjack | DONE | `/blackjack amount`: hit/stand, 3:2 natural, dealer stands on 17, public |
-| Gambling floor UI | DONE | public result cards, poker table/result cards, house dashboard, spectator prompts and reaction bait |
+| Gambling floor UI | DONE | public result cards for coinflip/all-in/slots/roulette, poker table/result cards, house dashboard, spectator prompts and reaction bait |
 | Poker (Texas Hold'em) | **DONE** | `/poker`: four-seat public table vs three house bots; fold/check/call/raise/all-in; buy-in held, timeout fold, restart refund, final-stack settlement |
 | Individual net worth tax | DONE | 5% of the whole wallet on every payout run (Cash and Default); nations/kingdoms untaxed |
 | Daily allowance | DONE | `/daily`; 24h cooldown, 100–400% streak multiplier, 60% floor |
@@ -325,13 +327,15 @@ Every source file and what it is for. Sub-packages have their own README.
 | `daily.py` | Pure `/daily` streak and multiplier maths (no Discord, no database) |
 | `coinflip.py` | Pure `/individual coinflip` odds, stake guards and payout maths (no Discord, no database) |
 | `allin.py` | Pure `/allin` odds, stake guards and payout maths (no Discord, no database) |
+| `slots.py` | Pure `/slots` machine: weighted strip, paytable, exact return/house edge, jackpot reserve, stake guards (no Discord, no database) |
+| `roulette.py` | Pure `/roulette` wheel: European layout, bet shapes, per-bet pricing, pocket resolution, stake guards (no Discord, no database) |
 | `blackjack.py` | Pure blackjack: shoe, hand values, naturals, dealer policy, settlement (no Discord, no database) |
 | `poker.py` | Pure Texas Hold'em engine: card model, five/seven-card evaluator, side-pot `distribute()`, blinds, betting rounds and bot policy (no Discord, no database) |
 | `casino.py` | The house counterparty: begin/finish a wager so wins are paid by the Casino and losses fund it |
 | `fishing.py` | Pure `/fish` catch maths: random fish, 20–100 credit range, cap/house refusal rules (no Discord, no database) |
 | `creation.py` | Nation/kingdom petition flow with Approve/Deny buttons, plus `found_account()` (create + bonus + ledger) shared with the admin `add` commands |
 | `embeds.py` | Themed embed builders for accounts, payouts and errors |
-| `gambling_ui.py` | Spectator-facing gambling cards: coinflip/all-in results, the Casino floor dashboard, the poker table/result cards, and public reaction cues |
+| `gambling_ui.py` | Spectator-facing gambling cards: coinflip/all-in/slots/roulette results, the Casino floor dashboard, the poker table/result cards, and public reaction cues |
 | `checks.py` | Reusable admin permission checks |
 | `utils.py` | Money formatting, account encoding/resolution, autocompletes |
 | `requirements.txt` | Python dependencies |
@@ -360,7 +364,7 @@ Every source file and what it is for. Sub-packages have their own README.
 | `cogs/union.py` | Union treasury, membership, donations and admin funding |
 | `cogs/factions.py` | `/faction` — the single command for join/leave, contract, commitment/uncommit, donate, deliver, status, contracts, cancel, fund, withdraw, members and setchannel |
 | `cogs/individual.py` | Personal wallets, `/daily`, transfers, coinflip, `/allin` and `/individual delete` |
-| `cogs/games.py` | `/blackjack` and `/poker` tables, plus the `/casino` house account commands |
+| `cogs/games.py` | `/blackjack`, `/poker`, `/slots` and `/roulette` tables, plus the `/casino` house account commands |
 | `cogs/fishing.py` | `/fish` and the `/fishingguild` house account commands |
 | `cogs/leaderboard.py` | Separate nation, kingdom and individual rankings |
 | `cogs/__init__.py` | Package marker |
@@ -404,6 +408,8 @@ Every source file and what it is for. Sub-packages have their own README.
 | `checks/check_factions.py` | Faction switching and Union-commit cleanup, open Crown membership, record-based contract judgment, Crown tax/grace, contract caps and requested-budget ceilings, partial/full delivery, demand decay, expiry, short-treasury rollback, Albert context and command callbacks |
 | `checks/check_coinflip.py` | Coinflip odds (exactly 50% win over all 10,000 rolls), zero house edge, stake guards, cap refusal, ledger |
 | `checks/check_allin.py` | All-in odds for every number 2-100 (exhausted), flat 10/11 return, n=1 refusal, cap/balance refusals, duplicate-confirmation refusal, ledger |
+| `checks/check_slots.py` | Slots strip wiring, the paytable priced by brute force over all 64,000 reel outcomes, 8.78% edge, cap/jackpot coverage refusals, ledger and conservation |
+| `checks/check_roulette.py` | Roulette layout (colours/dozens/columns tile 1-36, zero in nothing), all 37 pockets priced per bet shape at 36/37, straight-up and zero branches, per-bet cap refusals, ledger and conservation |
 | `checks/check_casino.py` | Blackjack rules (including multi-ace soft hands) and every settlement branch, house solvency, conservation over 200 wagers, restart refund, wallet-deletion lifecycle, poker command/table/final-stack settlement, public posts |
 | `checks/check_fishing.py` | `/fish` range/refusals, Fishing Guild guarded balance, end-to-end catch and ledger, cap/short-guild refusals, admin funding |
 | `checks/check_poker.py` | Poker evaluator (category order, wheel, best five of seven), side pots, uncalled-bet refunds, short all-ins not reopening raises, odd chips, blinds and the big blind's option, 400 seeded hands with chips conserved |
@@ -452,6 +458,8 @@ permission; `[Union Admin]` means the configured Union Admin role or an admin.
 | `/faction` | `join`, `leave`, `contract`, `commitment`, `uncommit`, `donate`, `deliver`, `status`, `contracts`, `cancel`, `fund`, `withdraw`, `members`, `setchannel` — each action shows only its own options |
 | `/individual` | `balance`, `transfer`, `pay`, `coinflip`, `delete`, `give` [Admin] |
 | `/allin` | `number` (2–100) — stakes the whole individual balance on one draw |
+| `/slots` | `amount` — spin three weighted reels; three of a kind pays 16x–250x |
+| `/roulette` | `amount`, `bet` (red/black/odd/even/low/high/dozens/columns/straight up), `number` (0–36, straight up only) |
 | `/blackjack` | `amount` — one hand against the Casino, hit or stand |
 | `/poker` | `amount` — four-seat Texas Hold'em against three house bots |
 | `/fish` | _no options_ — one random 20–100 credit catch paid by the Fishing Guild |
@@ -582,6 +590,37 @@ in the channel so the draw is watched, but only the caller can press the button.
 everything for no profit. A bet is also refused when a win would breach the
 100M individual cap, since the payout - not the stake - is what the cap limits.
 See `allin.py` and `config.ALLIN_HARDNESS_NUMERATOR`.
+
+`/slots amount:` spins the Royal three-reel machine. Each reel draws independently
+from the same weighted strip, so three of one symbol lands with probability
+`(weight / 40)^3`: cherries are 1 in 64, the single seven is 1 in 64,000. Only
+**three of a kind** pays - a pair is the near miss it looks like - and the
+multiple rises with the rarity: **🍒 16x, 🍋 20x, 🔔 26x, 🍀 40x, 💎 70x, 👑 140x,
+7️⃣ 250x**. Those weights and payouts price the whole machine exactly:
+
+    return = sum(weight^3 x payout) / 40^3 = 58,382 / 64,000 = 0.9122
+
+so **3.95% of spins pay** and the house keeps **8.78%** of everything staked - a
+sink close to `/allin`'s 9.09%, not a faucet. Because the 250x jackpot can land
+on any pull, the Casino must be able to cover `250 x stake` before the reels
+turn; the bet is refused otherwise. Stakes are 100 to 10,000,000, and a stake
+whose jackpot would breach the 100M wallet cap is refused up front. Change a
+weight or a payout and you change the edge, so re-run `checks/check_slots.py`,
+which prices all 64,000 reel outcomes by brute force.
+
+`/roulette amount bet [number]:` drops the ball on a **European single-zero**
+wheel - one green zero and 1-36, eighteen red and eighteen black. Bet a colour,
+odd/even, low (1-18) / high (19-36), a dozen, a column, or a single number with
+**Straight up** plus `number:`. Payouts are the standard ones: straight up
+**35:1**, even money **1:1**, dozen and column **2:1**. Every one of them returns
+`36/37` of the stake, so the house edge is a flat **2.70%** whichever bet you
+place - the zero is not red, not black, not odd, not even, not low, not high and
+sits in no column and no dozen, which is exactly where that edge comes from. A
+US double-zero wheel (5.26%) is deliberately not used. Stakes are 100 to
+10,000,000 and the cap is checked against the bet's own payout, so a 100,000
+straight up is refused on a wallet a 1,000,000 even-money bet is welcome on. The
+house must cover `36 x stake` before the ball drops. See `roulette.py`;
+`checks/check_roulette.py` walks all 37 pockets for every bet shape.
 
 `/blackjack amount:` deals one hand in the channel against the Casino. You stake
 any amount between 100 and 10,000,000 (or `all`, `half`, `quarter`), get two
@@ -872,6 +911,21 @@ python3 checks/check_casino.py
   `config.ALLIN_HARDNESS_NUMERATOR` above `ALLIN_HARDNESS_DENOMINATOR` or the
   Casino stops earning. `n = 1` is refused because a 1x payout returns only the
   stake, so it risks everything for no profit.
+* **Slots is a priced machine, not a guess.** ``slots.expected_return()`` is
+  ``sum(weight**3 * payout) / TOTAL**3`` = ``58,382/64,000``: a **8.78% sink**.
+  Only three of a kind pays, and the reels reserve the **250x** jackpot
+  (``slots.max_gross``) before the spin, not the average payout. Editing
+  ``config.SLOTS_SYMBOLS`` changes the edge for the whole machine -
+  ``checks/check_slots.py`` re-prices all 64,000 outcomes, so run it after any
+  change and keep ``house_edge()`` positive.
+* **Roulette carries one flat edge.** On a single-zero wheel every bet shape
+  returns ``36/37`` (straight 1/37 x 36, even money 18/37 x 2, dozen and column
+  12/37 x 3), so the house keeps **2.70%** whichever bet is placed. The zero must
+  stay in no colour, no dozen, no column, no high/low and no odd/even - that is
+  the entire edge. The reserve is the **36x** straight up
+  (``roulette.max_gross``), and the wallet cap is checked against the bet's own
+  multiple, not the largest one on the table. A double-zero wheel would return
+  ``36/38``; do not add one without pricing it the same way.
 * Deposits and withdrawals are admin-only because they cross the in-game /
   Discord boundary.
 * A nation may draw from its kingdom only with the kingdom leader's approval.
@@ -1010,11 +1064,12 @@ README. The live bot runs from the account root, not from that folder.
    reads `status = completed` with `upfront_claimed = 1` and
    `final_claimed = 1`. Nothing is outstanding: do not ask an admin to claim or
    release it again.
-4. **Tests.** The `checks/` suite is the automated verification: 19 standalone
+4. **Tests.** The `checks/` suite is the automated verification: 21 standalone
    scripts run by `python3 checks/run_all.py`, all passing against this tree.
    They cover the pure maths, the database and transaction layer, transfers,
    the per-run tax cycle, factions/Crown contracts, every gambling game
-   including poker, fishing and the Fishing Guild, the `/daily` race, the daily
+   including poker, slots and roulette, fishing and the Fishing Guild, the
+   `/daily` race, the daily
    Turso mirror and AI-guide configuration, the creation race, bank/draw guards,
    the runner's own false-pass guard and a cog-load smoke test. They build
    throwaway
@@ -1032,7 +1087,7 @@ README. The live bot runs from the account root, not from that folder.
    covered: per-run tax reads, wallet resurrection, draw membership, contract
    quota/approval races, stale `setbalance` deltas, guarded status writes,
    cross-guild case IDs, poker uncalled bets/short all-ins, the DM settings
-   ghost row and the runner false pass. See `BUG-FIXES.md`; the 19-check suite
+   ghost row and the runner false pass. See `BUG-FIXES.md`; the 21-check suite
    exercises each one. A follow-up pass also pinned the concurrent-Default
    double-pay guard, the `setbalance` reply-after-commit rule, the all-in
    confirmation idempotence and multi-ace `is_soft`; `check_factions.py`
@@ -1138,6 +1193,48 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-06 — `/slots` and `/roulette` (uploaded; **restart required**)
+
+**Change.** Two new one-shot Casino games, both settled against the house so they
+move credits instead of creating them.
+
+- **`/slots amount`** — three reels drawn independently from one weighted strip
+  (`config.SLOTS_SYMBOLS`: 🍒10/16x, 🍋9/20x, 🔔8/26x, 🍀6/40x, 💎4/70x, 👑2/140x,
+  7️⃣1/250x). Only three of a kind pays; a pair is a displayed near miss and pays
+  nothing. The paytable prices itself exactly:
+  `sum(weight^3 x payout) / 40^3 = 58,382/64,000` = **0.9122**, so the house keeps
+  **8.78%** and 3.95% of spins pay. The **250x** jackpot is what the house must
+  cover before a spin (`slots.max_gross`), and the 100M wallet cap is screened
+  against that jackpot, not the stake.
+- **`/roulette amount bet [number]`** — European single-zero wheel. Bets: red,
+  black, odd, even, low (1–18), high (19–36), the three dozens, the three columns,
+  and **Straight up** with `number` (0–36). Payouts are the standard ones
+  (straight 35:1, even money 1:1, dozen/column 2:1), which all return
+  `36/37` — a flat **2.70%** edge on every shape. The zero is in no colour, no
+  dozen, no column and neither odd/even nor low/high, which is where the edge
+  comes from. The reserve is the **36x** straight up; the cap is checked against
+  the bet's own multiple, so a big straight is refused while the same stake on a
+  colour is accepted.
+- Both take `all` / `half` / `quarter`, both post a public result card with the
+  usual spectator bait (`gambling_ui.slots_result`, `gambling_ui.roulette_result`),
+  both appear on the `/casino balance` floor board, and both write
+  `individual_slots` / `individual_roulette` ledger rows on **both** sides. The
+  `/allin` ledger emoji moved from 🎰 to 🎲 so the slot machine owns 🎰.
+- `config.py` gained `SLOTS_*` and `ROULETTE_*`; `cogs/ledger.py` gained the two
+  kinds; the surface is **114 commands** (112 + the two games), still **16 cogs**.
+
+**Verification.** `checks/check_slots.py` re-prices **all 64,000** reel outcomes
+by brute force against `slots.expected_return()`, then drives the cog: a forced
+jackpot pays 250x, a forced pair pays nothing and shows the near miss, refusals
+(minimum, cap, un-covered house) never spin or move money, and the wallet/house
+ledger mirrors. `checks/check_roulette.py` proves the layout tiles 1–36 (colours,
+dozens, columns), prices every bet shape over all **37 pockets** at exactly
+`36/37`, covers the straight-up and zero branches, and checks the per-bet cap
+refusal, refusals, conservation and ledger. `check_cogs.py` pins **114 / 16** and
+the option surface of both commands. Suite **21/21**, `compileall` and `pyflakes`
+clean. **Restart required** — new commands and new cogs code do not load until the
+process restarts.
 
 ### 2026-11-06 — Full re-audit, doc corrections and host hygiene (uploaded, docs only; **no restart needed**)
 

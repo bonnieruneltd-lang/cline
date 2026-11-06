@@ -327,3 +327,48 @@ POKER_RAISE_STRENGTH = 0.62             # strength above which a bot raises for 
 POKER_BLUFF_RATE = 0.08                 # chance of a raise with nothing owed
 POKER_BOT_DELAY_SECONDS = 0.7           # reserved for a future paced bot animation
 
+# ---------------------------------------------------------------------------
+# Individuals — /slots (three reels, pays on three of a kind)
+# ---------------------------------------------------------------------------
+# Each reel spins independently over the same weighted strip, so three of a kind
+# on one symbol happens with probability (weight / TOTAL)^3 and the whole
+# paytable can be priced exactly:
+#
+#     expected return = sum(weight^3 * payout) / TOTAL^3
+#
+# With the table below that is 58,382 / 64,000 = 0.9122, an **8.78% house
+# edge** - close to /allin's 9.09% and far from a faucet. Two of a kind pays
+# nothing, so 3.95% of spins pay and 96.05% feed the house. Weights and payouts
+# are one economy: raising a payout or a common symbol's weight lowers the edge
+# for the whole machine. `checks/check_slots.py` prices every combination, so
+# run it after any edit here.
+SLOTS_SYMBOLS = (
+    # emoji, name, weight on the strip, gross payout multiple on three of a kind
+    ("🍒", "Cherry", 10, 16),
+    ("🍋", "Lemon", 9, 20),
+    ("🔔", "Bell", 8, 26),
+    ("🍀", "Clover", 6, 40),
+    ("💎", "Diamond", 4, 70),
+    ("👑", "Crown", 2, 140),
+    ("7️⃣", "Seven", 1, 250),
+)
+SLOTS_MIN_STAKE = 100
+SLOTS_MAX_STAKE = 10_000_000
+
+# ---------------------------------------------------------------------------
+# Individuals — /roulette (European single-zero wheel)
+# ---------------------------------------------------------------------------
+# One green zero and 36 numbers. The payouts are the standard ones - straight
+# 35:1, even money 1:1, dozen and column 2:1 - and on a single-zero wheel every
+# one of them prices identically: 36/37 returned, a flat **2.70% edge**. That is
+# the whole reason the wheel is European; a US double-zero wheel returns 36/38
+# and is deliberately not used. The number layout lives in `roulette.py` (it is
+# game rules, not economy tuning); only the stake bounds are here.
+ROULETTE_POCKETS = 37                   # 0-36, one green zero
+ROULETTE_STRAIGHT_MULTIPLE = 36         # 35:1 plus the stake back
+ROULETTE_EVEN_MONEY_MULTIPLE = 2        # 1:1 plus the stake back
+ROULETTE_DOZEN_MULTIPLE = 3             # 2:1 plus the stake back
+ROULETTE_COLUMN_MULTIPLE = 3            # 2:1 plus the stake back
+ROULETTE_MIN_STAKE = 100
+ROULETTE_MAX_STAKE = 10_000_000
+
