@@ -163,8 +163,16 @@ SHA-256 compared against the host after the write):
 
 Nothing is outstanding code-side. The generated guide refreshes on the startup
 pass or 06:00 UTC; deployment backups from this session
-(`.bak-20261106-204359`, `-205047`, `-205221`, `-210331`) are kept, not pruned —
+(`.bak-20261106-204359`, `-205047`, `-205221`, `-210854`) are kept, not pruned —
 pruning is an owner decision (known gap).
+
+**Open operational item:** the 21:09:15 startup guide run wrote
+`fallback_guide()` (6,131 characters) because the model call exceeded the **240 s**
+`CHATBOT_TIMEOUT` on `cline-pass/deepseek-v4-pro`; a manual call with the same
+settings and a longer timeout reproduced the slowness. The guide code is correct
+(trimming and the 3,600-word budget are pinned), so this is provider latency: the
+next run retries, and if it persists raise `CHATBOT_TIMEOUT` for the guide or use
+the flash tier for `DAILY_GUIDE_MODEL`. A fallback guide is valid, just terse.
 
 Live data re-audited at close (db + `-wal` + `-shm` pulled together):
 `integrity_check` `ok`, `foreign_key_check` empty, all **681** ledger rows replay

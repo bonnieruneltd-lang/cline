@@ -1342,9 +1342,18 @@ contracts, 6 orders. Tavily and the `CHATBOT_*` gateway both answered earlier in
 the session.
 
 **Left to a later owner.** Prune the deployment backups (this session added
-`.bak-20261106-204359`, `-205047`, `-205221`, `-210331`) — an explicit decision,
+`.bak-20261106-204359`, `-205047`, `-205221`, `-210854`) — an explicit decision,
 not automatic; the Turso append-only erasure question; the Forge mod; and no
 `POST /api/preview`.
+
+**One operational note from the close.** The 21:09 startup guide run hit the
+**240 s** client timeout on `cline-pass/deepseek-v4-pro` and wrote
+`fallback_guide()` (6,131 characters) instead of a full document; a manual call
+with the same settings reproduced the timeout, so it is provider latency, not the
+trim change (`trim_guide()` and the 3,600-word budget are pinned by
+`check_daily_sync.py`). The 06:00 UTC run retries; if it keeps timing out, raise
+`CHATBOT_TIMEOUT` for the guide or move `DAILY_GUIDE_MODEL` to the flash tier. The
+fallback is always a valid, if terse, guide — never a broken file.
 
 ### 2026-11-06 — Capacity: twenty-plus contracts at once, measured (**live after the 21:05 restart**)
 
