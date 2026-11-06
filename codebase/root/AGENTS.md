@@ -99,7 +99,39 @@ A proven deploy loop:
    the cog-load smoke test **against that copy**, not your working copy. This is
    what catches a file you forgot to upload.
 
+Backup retention. The loop writes one `.bak-YYYYMMDD-HHMMSS` per changed file and
+nothing prunes them, so they accumulate: the host carried **559** on 2026-11-06
+(295 root, 132 `cogs/`, 91 `checks/`, 35 `gilbert/`, 5 `shop/`, 1 `forge-mod/`).
+Keep the three newest per file plus every backup that belongs to the build that
+is currently live, and prune the rest only after that build has survived a payout
+cycle — they are the rollback path. Never prune as part of a code change, and
+never delete the backups of the file you are about to replace.
+
+A WAL database must be pulled as three files. Download `royal_bank.db`,
+`royal_bank.db-wal` and `royal_bank.db-shm` together and open them in place; the
+main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
+`transactions` rows that the bot could see).
+
 ### Last known live state
+
+2026-11-06 (**re-audit; docs-only upload, live code unchanged since the
+`20261029-0216` + daily-sync builds**). Swept the whole host from SFTP against
+this checkout at `082b620`: **82 live files, 81 byte-identical**, the only extra
+being the generated `daily_guide.md`. `checks/run_all.py` **19/19**,
+`compileall`/`pyflakes` clean, surface **112 / 16 cogs**. Live DB pull (the `.db`,
+its `-wal` and `-shm` together, so the WAL is applied): `integrity_check: ok`, 33
+tables, 1,169 rows, newest ledger
+row `2026-11-05T15:30:06`; treasuries Union 27,649,541 / Crown 60,000,000 / Casino
+100,020,881,876 / Fishing Guild 998,891; payout cycle `2026-11-03 → 2026-11-17`.
+The daily jobs are alive: mirror 05:00 (32 tables, 1,152 rows), guide 06:00, and
+Turso holds 28 `daily_guides` rows all with `guild_id = 1522373632142086177`
+(none NULL), so `b59619d` is confirmed in production. `UN-COMMUN-001` was
+claimed **and** released on 2026-10-29 03:20 (ledger 506–510) and is
+`completed` — the older "still to take" notes were stale and are corrected.
+New open gaps: the mirror keeps a deleted wallet's ledger rows (README section 9
+item 8) and deployment backups are never pruned (item 9). Pull a WAL database
+with `royal_bank.db`, `-wal` **and** `-shm` together or you will read a stale
+snapshot — the main file alone showed 4 fewer `transactions` rows than the truth.
 
 2026-10-29 03:00 UTC (**0216 build confirmed live**). The process restarted at
 03:00:49–55 and loaded the `/give` build: the live surface is **112** commands,
@@ -973,11 +1005,20 @@ consistent.
 - Forge mod (`forge-mod/` is a README only).
 - Contracts approved before `/contract setboard` was configured have no board
   message; they can still be claimed with `/contract claim`.
-- The `checks/` suite **is** the automated test suite: 18 standalone scripts run
+- The `checks/` suite **is** the automated test suite: 19 standalone scripts run
   by `python3 checks/run_all.py`. They cover ledger rollback, payout cycles,
   transfer routing in all nine directions, leverage boundaries, contract
   claim/quota/approval races, draws, Union guards, membership, dues, pricing,
   commitments, the `/union` surface, faction switching, Crown tax and supplier
   contracts, the individual cap, `/daily`, data deletion, leaderboards, the kit
-  cooldown, coinflip/all-in/blackjack/poker/fishing and the cog-load smoke test.
+  cooldown, coinflip/all-in/blackjack/poker/fishing, the daily Turso mirror and
+  AI-guide configuration, and the cog-load smoke test.
   `BUG-FIXES.md` lists every check and what it proves.
+- The Turso mirror is **append-only**. `Database.delete_individual()` erases a
+  wallet's ledger rows with the balance, but `daily_sync.py` only ever upserts,
+  so the erased rows survive remotely (2026-11-06: 681 local vs 685 mirrored
+  `transactions`). Closing it is a product decision — see README section 9
+  item 8. Do not "fix" it by adding a delete to the mirror without the owner's
+  agreement.
+- Deployment backups are never pruned (559 on the host on 2026-11-06). The
+  retention rule lives in "Deploying" above and in README section 9 item 9.

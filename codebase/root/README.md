@@ -1000,22 +1000,24 @@ README. The live bot runs from the account root, not from that folder.
    boards, but contracts approved before the board existed have no
    `board_message_id`, so they are not listed. `/contract claim` still works
    for them; a small admin "republish board" pass would fix the listing.
-3. **Legacy contract rows.** Cases approved under the old "party pays" model
-   keep their bytes but are paid back through `/contract claim` (whole budget,
-   since the old model charged it in full and keys are now inert). The one live
-   legacy case (`UN-COMMUN-001`, 1,000,000 credits) has **no claimed tranches**
-   on the live row (`upfront_claimed = 0`, `final_claimed = 0`), so one claim
-   pays the **whole 1,000,000** (250,000 upfront + 750,000 completion) from the
-   Union to the Commune. The row is already `closed`; a Union Admin can mark it
-   completed with `/contract release case_id:UN-COMMUN-001` after the claim.
-   Do not assume the old 250,000-claimed figure — it does not match the row.
-4. **Tests.** The `checks/` suite is the automated verification: 18 standalone
+3. **Legacy contract rows — resolved.** Cases approved under the old "party
+   pays" model keep their bytes but are paid back through `/contract claim`
+   (whole budget, since the old model charged it in full and keys are now
+   inert). The one live legacy case, `UN-COMMUN-001` (1,000,000 credits), was
+   **claimed and released on 2026-10-29 at 03:20 UTC**: ledger ids 506–509 pay
+   the 250,000 upfront tranche and the 750,000 completion tranche from the
+   Union treasury into Commune Ouvrière, and id 510 is the release. The row
+   reads `status = completed` with `upfront_claimed = 1` and
+   `final_claimed = 1`. Nothing is outstanding: do not ask an admin to claim or
+   release it again.
+4. **Tests.** The `checks/` suite is the automated verification: 19 standalone
    scripts run by `python3 checks/run_all.py`, all passing against this tree.
    They cover the pure maths, the database and transaction layer, transfers,
    the per-run tax cycle, factions/Crown contracts, every gambling game
-   including poker, fishing and the Fishing Guild, the `/daily` race, the
-   creation race, bank/draw guards, the runner's own false-pass guard and a
-   cog-load smoke test. They build throwaway
+   including poker, fishing and the Fishing Guild, the `/daily` race, the daily
+   Turso mirror and AI-guide configuration, the creation race, bank/draw guards,
+   the runner's own false-pass guard and a cog-load smoke test. They build
+   throwaway
    SQLite files, so they never touch the live database. Keep it that way: a new
    money path should arrive with a check.
 5. **Union configuration is live.** `settings.union_commit_channel_id` is set
@@ -1030,11 +1032,33 @@ README. The live bot runs from the account root, not from that folder.
    covered: per-run tax reads, wallet resurrection, draw membership, contract
    quota/approval races, stale `setbalance` deltas, guarded status writes,
    cross-guild case IDs, poker uncalled bets/short all-ins, the DM settings
-   ghost row and the runner false pass. See `BUG-FIXES.md`; the 18-check suite
+   ghost row and the runner false pass. See `BUG-FIXES.md`; the 19-check suite
    exercises each one. A follow-up pass also pinned the concurrent-Default
    double-pay guard, the `setbalance` reply-after-commit rule, the all-in
    confirmation idempotence and multi-ace `is_soft`; `check_factions.py`
    covers the faction/Crown layer end to end.
+8. **The Turso mirror keeps erased wallets.** `/individual delete` calls
+   `Database.delete_individual()`, which deliberately removes that wallet's
+   ledger rows together with the balance — the member asked for their stored
+   data to be removed. The daily mirror (`daily_sync.py`) only ever upserts
+   (`INSERT OR REPLACE`) and never deletes, so those erased rows survive in
+   `transactions` on Turso. As of 2026-11-06 the live database holds 681
+   `transactions` rows against 685 in the mirror; the difference is one deleted
+   wallet (one `individual_grant` and three `individual_tax` rows). The live
+   database is correct and nothing reads the copy, but a deletion request is not
+   fully honoured across it. Closing this is a product decision, not a
+   one-liner: either mirror the deletion (a tombstone table, or a purge of
+   remote ids missing locally) or document the mirror as an append-only archive
+   that outlives the live row. **Ask the owner before implementing either.**
+9. **Deployment backups accumulate.** The proven deploy loop writes a
+   `<file>.bak-YYYYMMDD-HHMMSS` beside every changed file (see `AGENTS.md`,
+   "Deploying"), and nothing prunes them: the host held 559 of them on
+   2026-11-06 (295 in the account root, 132 in `cogs/`, 91 in `checks/`, 35 in
+   `gilbert/`, 5 in `shop/`, 1 in `forge-mod/`). They are small and they are the
+   rollback path, so they are kept deliberately; the agreed retention rule is
+   "keep the three newest per file plus everything from the current build, drop
+   the rest once a release has survived a payout cycle". Prune only with an
+   explicit decision — never as part of a code change.
 
 ---
 
@@ -1115,6 +1139,43 @@ it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
 
+### 2026-11-06 — Full re-audit, doc corrections and host hygiene (uploaded, docs only; **no restart needed**)
+
+**State found.** A complete sweep from SFTP against this checkout at `082b620`:
+**82 live files, 81 byte-identical** to the working copy, the only extra being
+the generated `daily_guide.md`. `checks/run_all.py` **19/19**, `compileall` and
+`pyflakes` clean, surface **112 / 16 cogs**. The live database pull (db + WAL +
+shm, WAL applied) is `integrity_check: ok` with 33 tables and 1,169 rows; the
+treasuries read Union 27,649,541 / Crown 60,000,000 / Casino 100,020,881,876 /
+Fishing Guild 998,891, the payout cycle runs `2026-11-03 → 2026-11-17`, and the
+newest ledger row is `2026-11-05T15:30:06`. The daily jobs are alive: the mirror
+ran at 05:00 today (32 tables, 1,152 rows) and the guide at 06:00; Turso holds
+**28** `daily_guides` rows, every one with `guild_id = 1522373632142086177` and
+none NULL, so the `b59619d` guild-id fix is confirmed in production.
+
+**Corrections (docs only, no code changed).**
+- Section 9 item 3 said `UN-COMMUN-001` was unclaimed and still needed
+  `/contract claim` + `/contract release`. It was paid on **2026-10-29 at 03:20
+  UTC** (ledger 506–510; 250,000 + 750,000 from the Union into Commune Ouvrière)
+  and the row is `completed`. The item now says so, and the 2026-10-29
+  close-out entry below carries a dated update note instead of a standing action.
+- Section 9 item 4 and `AGENTS.md` said the suite was **18** scripts; it is
+  **19** (`check_daily_sync.py` was never counted). Both now say 19 and list the
+  mirror/guide coverage.
+- Two new known-gap items: the mirror keeping a deleted wallet's ledger rows
+  (item 8) and the unpruned deployment backups (item 9).
+
+**Hygiene.** `.gitignore` now ignores the generated `daily_guide.md` and the
+mirror's `turso-tmp/` scratch directory, so a stray `git add .` can commit
+neither. Nothing on the host was deleted: the 559 `.bak-*` files are the rollback
+path and pruning them needs an explicit decision (retention rule in section 9
+item 9).
+
+**Verified.** `checks/run_all.py` **19/19**, `compileall` and `pyflakes` clean
+against this tree; every uploaded file was hash-compared and re-pulled from the
+host. **No restart is required** — the changed files are Markdown and
+`.gitignore`, which the running process never reads.
+
 ### 2026-10-29 — Session close-out (`20261029-0216`, docs to `0315`; **live since 03:00 UTC**)
 
 **State at close.** The process restarted at **03:00:49–55 UTC** and loaded the
@@ -1124,12 +1185,17 @@ and the surface is **112 / 16 cogs**. `contracts.faction` was already present
 from the 02:00 restart of the `20261029-0028` build, which also loaded the
 proposal-only `/faction contract`. The live DB passes `integrity_check: ok`.
 
-**Live action still to take.** `UN-COMMUN-001` is a closed legacy case with
-`upfront_claimed = 0` and `final_claimed = 0`, so
-`/contract claim case_id:UN-COMMUN-001` pays the whole **1,000,000**
-(250,000 + 750,000) from the Union into Commune Ouvrière;
+**Live action still to take (since done — see the update below).**
+`UN-COMMUN-001` was a closed legacy case with `upfront_claimed = 0` and
+`final_claimed = 0`, so `/contract claim case_id:UN-COMMUN-001` would pay the
+whole **1,000,000** (250,000 + 750,000) from the Union into Commune Ouvrière;
 `/contract release case_id:UN-COMMUN-001` then marks it completed. SFTP cannot
 run slash commands — an admin must do both in Discord.
+
+**Update 2026-11-06.** Both actions were performed on **2026-10-29 at 03:20
+UTC**: ledger ids 506–509 are the two tranches (Union → Commune Ouvrière) and id
+510 is the release; the row is `status = completed` with `upfront_claimed = 1`
+and `final_claimed = 1`. Nothing in this entry is outstanding.
 
 **Close-out checks.** Live tree **77/77** hash-identical to this checkout; the
 deployed pull (`/tmp/deployed_20261029-0216`) passes `compileall`, `pyflakes`

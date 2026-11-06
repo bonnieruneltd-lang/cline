@@ -6,3 +6,7 @@
 *.db-shm
 __pycache__/
 *.pyc
+# generated on the host by daily_sync.py
+daily_guide.md
+turso-tmp/
+*.bak-*

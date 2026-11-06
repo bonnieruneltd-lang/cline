@@ -1470,9 +1470,12 @@ printed.
    "fix" it; the Union treasury is separate on purpose.
 3. **The v1 API has one static bearer token.** Adequate for a single trusted
    consumer; rotation is manual.
-4. **Legacy contract `UN-COMMUN-001` needs Union funding before it can be
-   claimed.** This is the new rule working as intended, not a bug. Fund the
-   treasury before the party clicks Claim.
+4. **Legacy contract `UN-COMMUN-001` — resolved 2026-10-29.** It used to need
+   Union funding before it could be claimed (the new rule working as intended,
+   not a bug). The treasury was funded and the party claimed it on **2026-10-29
+   at 03:20 UTC**: ledger ids 506–509 are the two tranches (250,000 + 750,000,
+   Union → Commune Ouvrière) and id 510 is the release, so the row is
+   `completed` with both claim flags at 1. There is nothing left to do for it.
 5. **`_is_contract_space()` treats any channel whose name starts with
    `union-contract-` as a contract space.** Only reachable by manually renaming
    a channel; harmless.
@@ -1498,6 +1501,23 @@ printed.
    blackjack/poker hands. Draining the house mid-hand makes settlement (and a
    restart refund, which debits the house) fail until it is funded again. The
    deal already requires cover; a withdraw-time reserve check would close it.
+10. **The Turso mirror is append-only, so it keeps a deleted member's ledger.**
+   `Database.delete_individual()` deliberately deletes the wallet's
+   `transactions` rows with the balance, but `DailySync.sync_to_turso()` only
+   ever sends `INSERT OR REPLACE`, so the erased rows survive on the remote
+   copy. Measured 2026-11-06: 681 `transactions` locally against 685 mirrored,
+   the four extra being one `individual_grant` (5,000,000) and three
+   `individual_tax` rows of a deleted wallet. The live database is correct and
+   the mirror is a reader/backup copy, so nothing is broken today — but a
+   deletion request is not honoured across the copy. Two honest options: mirror
+   the erasure (a tombstone table, or a purge of remote ids that no longer exist
+   locally) or document the mirror as an append-only archive. **Needs an owner
+   decision; do not pick one silently.**
+11. **Deployment backups are never pruned.** Each upload writes a
+    `<file>.bak-YYYYMMDD-HHMMSS`; the host held 559 on 2026-11-06. They are the
+    rollback path, so they are kept on purpose — the retention rule (three newest
+    per file plus the live build's backups) is in `AGENTS.md` "Deploying" and
+    README section 9 item 9. Prune only on an explicit decision.
 
 ---
 
@@ -1614,15 +1634,16 @@ python3 -m pyflakes .          # unused names, undefined references
 | `checks/check_fishing.py` | `/fish` random 20–100 range, pure cap/short-guild refusals, guarded Fishing Guild balance, end-to-end catch, both ledger sides, conservation, no-wallet and admin fund/withdraw |
 | `checks/check_poker.py` | evaluator category order, wheel, best five of seven, side pots and odd chips, uncalled-bet refunds, folded seats never paid, short all-ins not reopening raises, blind posting and the big blind's option, flop resets without losing the pot, 400 seeded hands with chips conserved and every hand terminating |
 | `checks/check_gilbert.py` | DeepSeek model alias/base-URL normalisation, disabled-without-key, tier boundaries, prompt context facts (including soldiers), the friendlier tone, the membership-never-required rule, and Albert's contract briefing |
-| `checks/check_cogs.py` | concurrent `/daily` claims, import and cog-load smoke test, asserts 111 commands and 16 cogs, that `/faction` is the only faction command, and that `/faction contract` exposes exactly `faction`/`account`/`proposal`/`budget` |
+| `checks/check_cogs.py` | concurrent `/daily` claims, import and cog-load smoke test, asserts 112 commands and 16 cogs, that `/faction` is the only faction command, and that `/faction contract` exposes exactly `faction`/`account`/`proposal`/`budget` |
 | `checks/check_creation_race.py` | concurrent creation yields one account and one bonus ledger row; an approval name race closes the petition as `failed`; `/nation add` and `/kingdom add` report the same clash instead of crashing |
 | `checks/check_runner.py` | the runner rejects a bare exit or an `ERROR:` line with no summary instead of reporting a false pass |
+| `checks/check_daily_sync.py` | endpoint normalisation (`libsql://` → `https` pipeline), libSQL value encoding, identifier quoting, idempotent `CREATE TABLE`, the guide prompt/source/fallback/truncation, the env switches (mirror, runtime hour, run-on-start, temp dir, checkpoint), `guild_id` resolution for `daily_guides`, and the disabled-without-credentials path |
 
 Every script builds its own throwaway SQLite database in a temp directory. None
 of them read `royal_bank.db`, so the live file is never touched.
 `check_poker.py` needs no database at all: `poker.py` is pure.
 
-All 18 scripts pass as of 2026-10-28, against the working copy. When you fix a
+All 19 scripts pass as of 2026-11-06, against the working copy. When you fix a
 bug, add its check here — a fix without a check is how the
 transaction-isolation defect survived this long.
 
@@ -1643,5 +1664,6 @@ transaction-isolation defect survived this long.
 | API | JSON type handling, retired routes |
 | Schema | migrations over the live schema, `orders.union_discount`, `case_counters_global` |
 | Runner | summary required; bare exit/ERROR is a failure |
+| Daily sync | endpoint/value encoding, idempotent DDL, guide source and fallback, `guild_id`, run-on-start switches, disabled without credentials |
 
-All 18 scripts pass. When you add a check, add it to this table.
+All 19 scripts pass. When you add a check, add it to this table.
