@@ -1,5 +1,11 @@
 # Working notes for agents
 
+> **Start here:** this file is the complete, reference version of the agent
+> guidance. If you want a condensed, scannable read-first summary (the
+> invariants you must not break, the quick-start commands, and where to find
+> everything else), read **`AGENTS-optimized.md`** first — it is the same rules
+> in a fraction of the length (84 lines vs 1,151).
+
 Local mirror of the live Royal Court bot. The bot runs from the SFTP account
 root; this checkout is a working copy, not a deployment origin.
 
