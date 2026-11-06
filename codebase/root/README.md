@@ -1266,8 +1266,9 @@ replayed row by row, the live Tavily key was exercised, and the two
 documentation commits from the previous session were deployed — they were the
 only files behind the host.
 
-**The code matched the host; only the docs were behind.** 88 non-backup files
-live on the account. Every `.py` file, `Procfile`, `requirements.txt` and
+**The code matched the host; only the docs were behind.** 87 project files were
+live on the account before this deploy (plus the generated `daily_guide.md` and
+`.env`), and 90 after it. Every `.py` file, `Procfile`, `requirements.txt` and
 `.gitignore` is byte-identical to this checkout, as is
 `checks/check_shop.py`. `README.md`, `AGENTS.md` and `BUG-FIXES.md` differed by
 exactly one thing each — the new "Start here" banner added in `c57c965` /
@@ -1277,11 +1278,12 @@ exactly one thing each — the new "Start here" banner added in `c57c965` /
 `daily_guide.md` (24,502 chars, 19:15) and `turso-tmp/last_sync.json`
 (19:14), so the live process is still on the 19:13 build.
 
-**The live build is green.** The deployed `.py` tree was pulled back into an
-empty directory (`/workspace/audit-live`, 88 files) and `compileall`,
-`pyflakes` and `checks/run_all.py` were run **against that copy**: **22/22**,
-no warnings. The same suite passes **22/22** on this checkout, so the audit does
-not depend on the working copy being the deployed one.
+**The live build is green.** The deployed tree was pulled back into an empty
+directory (`/workspace/audit-live`, 88 files including the generated
+`daily_guide.md`) and `compileall`, `pyflakes` and `checks/run_all.py` were run
+**against that copy**: **22/22**, no warnings. The same suite passes **22/22** on
+this checkout, so the audit does not depend on the working copy being the
+deployed one.
 
 **The live data reconciles.** `royal_bank.db`, `-wal` and `-shm` were pulled
 together (692,224 / 1,322,552 / 32,768 bytes). `PRAGMA integrity_check` = `ok`,
