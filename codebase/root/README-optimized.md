@@ -1,5 +1,9 @@
 # README — optimized read-first version
 
+> **Current state (2026-11-06 close):** 115 commands / 16 cogs, all 22 checks
+> green, the tree on the host is byte-identical to this checkout, and the bot
+> is running this build (restarted 21:05 UTC). `/contract invite` is live.
+
 This is a condensed, scannable summary of `README.md` (~3,250 lines → ~60 lines).
 Read this first; `README.md` is the reference for every rule below.
 

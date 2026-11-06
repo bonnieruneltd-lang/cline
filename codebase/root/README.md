@@ -1297,7 +1297,56 @@ it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
 
-### 2026-11-06 — Capacity: twenty-plus contracts at once, measured (**uploaded; restart pending**)
+### 2026-11-06 — Session close-out: guide trim, helper invites and burst capacity are **live** (**115 commands; restart 21:05 UTC**)
+
+**Where the session ended.** Working tree clean and pushed; `checks/run_all.py`
+**22/22** on this checkout *and* on a fresh pull of the deployed tree;
+`compileall`/`pyflakes` clean; **89/89** project files byte-identical to the host.
+The bot restarted at **21:05:47 UTC**, so everything below is *running*: the guild
+command tree reads back **115 nodes** (23 top-level) including `/contract invite`,
+and the startup Turso mirror re-ran at 21:06:52. The "restart pending" lines in
+the three entries below are historical.
+
+**Three changes, each with checks behind it.**
+
+1. **The daily guide is trimmed, not sliced.** It ended mid-word inside an open
+   code span (`/fishing`) because `generate_guide()` did a hard slice.
+   `trim_guide()` cuts at the last paragraph/line/sentence/word boundary, drops
+   markup the cut left open and appends `GUIDE_TRIM_NOTE`; the prompt asks for 90%
+   of the cap (`GUIDE_WORD_HEADROOM`) so a compliant answer needs no trim. The
+   repaired live file (23,758 characters, ending on a complete paragraph) was
+   uploaded; the next guide run replaces it with a full-length one.
+2. **A party can bring helpers into its negotiation, and the persona answers
+   them.** Threads are `invitable=True`; `/contract invite member:@user` adds a
+   member (thread membership, or an overwrite on the channel fallback), reopens an
+   archived/locked ticket and flips `invitable` on older ones. `_may_participate()`
+   answers the requester, Union Admins and actual occupants, using
+   `Thread.fetch_member()` rather than `Thread.permissions_for()` (which resolves
+   the parent channel). Close/claim/release/reopen stay with the requester and
+   Union Admins.
+3. **Burst capacity.** 25 concurrent `/faction contract` calls open 25 cases with
+   unique IDs and one thread each; 20 threads are answered at once. A rate-limited
+   thread falls back to a channel ticket, and if both routes are limited the
+   command answers **Ticket Failed** and writes nothing. `_thread_add_user()`
+   waits out `retry_after` once; admins it cannot add are logged, not swallowed.
+
+**Not changed deliberately.** No economy rate, cap, quota, ledger rule, schema or
+migration; no `.env` value. The only new command is `/contract invite`.
+
+**Verified at close.** Live `royal_bank.db` + `-wal` + `-shm` pulled together at
+21:09 UTC: `integrity_check` `ok`, `foreign_key_check` empty, 33 tables, **681**
+ledger rows (`id` 1–685) replaying with **0** `balance_after` chain mismatches and
+all **25** accounts reconciled — Union 27,649,541, Crown 60,000,000, Casino
+100,020,881,876, Fishing Guild 998,891; 12 nations, 3 kingdoms, 6 wallets, 4
+contracts, 6 orders. Tavily and the `CHATBOT_*` gateway both answered earlier in
+the session.
+
+**Left to a later owner.** Prune the deployment backups (this session added
+`.bak-20261106-204359`, `-205047`, `-205221`, `-210331`) — an explicit decision,
+not automatic; the Turso append-only erasure question; the Forge mod; and no
+`POST /api/preview`.
+
+### 2026-11-06 — Capacity: twenty-plus contracts at once, measured (**live after the 21:05 restart**)
 
 **What was asked.** Whether the bot can handle more than 20 people opening
 contracts at the same time.
@@ -1333,7 +1382,7 @@ and the logged admin failure. `checks/run_all.py` **22/22**,
 
 **Deployed** with `.bak-<stamp>` backups and SHA-256 checks; **restart pending**.
 
-### 2026-11-06 — Contract discussions take helpers, and several talk at once (**uploaded; restart pending**)
+### 2026-11-06 — Contract discussions take helpers, and several talk at once (**live after the 21:05 restart**)
 
 **What was asked.** Whether the bots allow several conversations at the same
 time, and whether a party can add people to its contract discussion to help it
@@ -1376,7 +1425,7 @@ the README/AGENTS/BUG-FIXES counts updated). **Uploaded** with
 `.bak-<stamp>` backups and SHA-256 checks; **restart pending** so the bot picks
 up the new command and the listener change.
 
-### 2026-11-06 — Full-file audit ("check all the files") and the guide-trim fix (**uploaded; restart pending**)
+### 2026-11-06 — Full-file audit ("check all the files") and the guide-trim fix (**live after the 21:05 restart**)
 
 **What was asked.** "Check all the files." This pass re-audited rather than
 changed, and found one real defect — in the generated guide, not the economy.

@@ -125,6 +125,55 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 
 ### Last known live state
 
+2026-11-06 (**session close-out: the guide-trim fix, helper invites and the
+capacity hardening are uploaded *and running*; surface 115 commands / 16 cogs**).
+Working tree clean at the close-out commit and pushed; **22/22** on this checkout
+*and* on a fresh pull of the deployed tree; `compileall`/`pyflakes` clean; all
+**89** project files byte-identical to the host.
+
+**The restart happened at 21:05:47 UTC**, so the running process is on this build
+rather than an upload: the guild command tree reads back **115 nodes** (23
+top-level) and **includes `/contract invite`**, and the startup mirror re-ran at
+21:06:52. Do not restart again for these changes.
+
+What landed this session, in order (each with `.bak-20261106-*` backups and a
+SHA-256 compared against the host after the write):
+
+1. **The daily guide is trimmed, not sliced.** `daily_guide.md` ended mid-word
+   inside an open code span (`/fishing`) because `generate_guide()` did
+   `guide[: self.guide_max_chars]`. `trim_guide()` now cuts at the last
+   paragraph/line/sentence/word boundary, drops markup the cut left open and
+   appends `GUIDE_TRIM_NOTE`; the prompt asks for 90% of the cap
+   (`GUIDE_WORD_HEADROOM`, 3,600 words at 24,000 characters) so a compliant
+   answer needs no trim. The repaired live file (23,758 characters, ends on a
+   complete paragraph) was uploaded at 20:44; the next guide run overwrites it
+   with a full one.
+2. **A party can bring helpers into its negotiation, and the persona answers
+   them.** Threads are `invitable=True`; `/contract invite member:@user` adds a
+   member (thread membership, or an overwrite on the text-channel fallback),
+   reopens an archived/locked ticket, flips `invitable` on older tickets, and
+   refuses finished tickets/bots. `_may_participate()` governs who is answered:
+   requester, Union Admins, and actual occupants (threads use
+   `Thread.fetch_member()` — **never** `Thread.permissions_for()`, which resolves
+   the *parent* channel). Close/claim/release/reopen stay on `_can_speak()`.
+3. **Bursts are expected.** 25 concurrent `/faction contract` calls open 25 cases
+   with unique IDs and one thread each; 20 threads talk at once. `_thread_add_user()`
+   honours `RateLimited.retry_after` once (capped 5 s) and `_add_union_admins()`
+   logs the member IDs it could not add instead of swallowing them.
+
+Nothing is outstanding code-side. The generated guide refreshes on the startup
+pass or 06:00 UTC; deployment backups from this session
+(`.bak-20261106-204359`, `-205047`, `-205221`, `-210331`) are kept, not pruned —
+pruning is an owner decision (known gap).
+
+Live data re-audited at close (db + `-wal` + `-shm` pulled together):
+`integrity_check` `ok`, `foreign_key_check` empty, all **681** ledger rows replay
+in `id` order with **0** `balance_after` chain mismatches, and the closing ledger
+sum equals the stored balance for all **25** accounts (12 nations, 3 kingdoms, 6
+wallets, Union 27,649,541, Crown 60,000,000, Casino 100,020,881,876, Fishing
+Guild 998,891). Ledger ids run 1–685 over 681 rows — the four gaps are the
+deleted-member rows behind the documented append-only/erasure decision.
+
 2026-11-06 (**docs-only deploy: the optimized read-first guides are live**).
 Working tree clean; **22/22** on this checkout *and* on a fresh pull of the
 deployed tree; `compileall`/`pyflakes` clean; surface unchanged at **114
