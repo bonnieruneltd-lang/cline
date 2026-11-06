@@ -1,6 +1,6 @@
 # Agent guide — optimized read-first version
 
-This is a condensed, scannable summary of `AGENTS.md` (roughly 1/5 the length).
+This is a condensed, scannable summary of `AGENTS.md` (~84 lines against ~1,180).
 Read this first; the full `AGENTS.md` is the reference for everything below.
 
 ## What this repo is

@@ -4,7 +4,7 @@
 > guidance. If you want a condensed, scannable read-first summary (the
 > invariants you must not break, the quick-start commands, and where to find
 > everything else), read **`AGENTS-optimized.md`** first — it is the same rules
-> in a fraction of the length (84 lines vs 1,151).
+> in a fraction of the length (~84 lines vs ~1,180).
 
 Local mirror of the live Royal Court bot. The bot runs from the SFTP account
 root; this checkout is a working copy, not a deployment origin.
@@ -122,6 +122,33 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 `transactions` rows that the bot could see).
 
 ### Last known live state
+
+2026-11-06 (**docs-only deploy: the optimized read-first guides are live**).
+Working tree clean; **22/22** on this checkout *and* on a fresh pull of the
+deployed tree; `compileall`/`pyflakes` clean; surface unchanged at **114
+commands / 16 cogs** — no bot code was touched, so **no restart is needed**.
+The previous session's two doc commits were the only files behind the host:
+`README.md`, `AGENTS.md` and `BUG-FIXES.md` differed by just their new "Start
+here" banner and `README-optimized.md` / `AGENTS-optimized.md` /
+`BUG-FIXES-optimized.md` were local-only. All six are now uploaded with
+`.bak-20261106-203220` backups taken from the live originals and SHA-256
+verified after the write.
+
+Live data re-audited (db + `-wal` + `-shm` pulled together): `integrity_check`
+`ok`, `foreign_key_check` empty, all **681** ledger rows replay in `id` order
+with **0** `balance_after` chain mismatches, and the closing ledger sum equals
+the stored balance for all **25** accounts (12 nations, 3 kingdoms, 6 wallets,
+Union 27,649,541, Crown 60,000,000, Casino 100,020,881,876, Fishing Guild
+998,891). Ledger ids run 1–685 over 681 rows — the four gaps are the
+deleted-member rows behind the documented append-only/erasure decision.
+
+The live Tavily key was exercised through `gilbert/lookup.py` (never a raw HTTP
+call): `needs_lookup()` triggers and `search()` returns results, and it stays
+best-effort (`[]` on failure, never an exception into a reply).
+
+Deploy-script artifact to ignore: the root files `.bak-20261106-172901`,
+`-172912` and `-173008` (85,251 bytes each) are `BUG-FIXES.md` copies whose
+basename was dropped in the 17:29 session. Left in place, not pruned.
 
 2026-11-06 (**live on cline-pass; deployed and running**). Working tree clean;
 **22/22**, `compileall`/`pyflakes` clean, surface **114 commands / 16 cogs**.

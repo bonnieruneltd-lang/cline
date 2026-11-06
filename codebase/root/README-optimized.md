@@ -1,6 +1,6 @@
 # README — optimized read-first version
 
-This is a condensed, scannable summary of `README.md` (3,182 lines → ~110 lines).
+This is a condensed, scannable summary of `README.md` (~3,250 lines → ~60 lines).
 Read this first; `README.md` is the reference for every rule below.
 
 ## What this bot does

@@ -1,6 +1,6 @@
 # BUG-FIXES — optimized read-first version
 
-This is a condensed, scannable summary of `BUG-FIXES.md` (1,742 lines → ~120 lines).
+This is a condensed, scannable summary of `BUG-FIXES.md` (~1,750 lines → ~45 lines).
 Read this first; `BUG-FIXES.md` is the reference for full symptom/cause/impact/fix/test entries.
 
 ## How to use this file

@@ -4,7 +4,7 @@
 > documentation. If you want a condensed, scannable read-first summary (what the
 > bot does, the economy rules that must not be broken, the command surface,
 > deployment checklist, known gaps and money paths), read **`README-optimized.md`**
-> first — it is the same rules in a fraction of the length (~110 lines vs 3,182).
+> first — it is the same rules in a fraction of the length (~60 lines vs ~3,250).
 
 This repository is the **Royal Bank / Royal Court** bot for the Minecraft server
 **The Realm of Rune**, plus the placeholder for the **Forge mod** that will
@@ -1256,6 +1256,69 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-06 — Second full audit ("check all the files"); the optimized guides go live (**uploaded; no restart needed**)
+
+**What was asked.** "Check all the files" again. This pass re-audited rather than
+changed: every file was compared with the host, the whole suite was re-run on
+this checkout *and* on a fresh pull of the deployed tree, the live database was
+replayed row by row, the live Tavily key was exercised, and the two
+documentation commits from the previous session were deployed — they were the
+only files behind the host.
+
+**The code matched the host; only the docs were behind.** 88 non-backup files
+live on the account. Every `.py` file, `Procfile`, `requirements.txt` and
+`.gitignore` is byte-identical to this checkout, as is
+`checks/check_shop.py`. `README.md`, `AGENTS.md` and `BUG-FIXES.md` differed by
+exactly one thing each — the new "Start here" banner added in `c57c965` /
+`6620852` — and `README-optimized.md`, `AGENTS-optimized.md` and
+`BUG-FIXES-optimized.md` existed only locally. Those six files were uploaded
+(see below). The only host-only content remains `.env`, the generated
+`daily_guide.md` (24,502 chars, 19:15) and `turso-tmp/last_sync.json`
+(19:14), so the live process is still on the 19:13 build.
+
+**The live build is green.** The deployed `.py` tree was pulled back into an
+empty directory (`/workspace/audit-live`, 88 files) and `compileall`,
+`pyflakes` and `checks/run_all.py` were run **against that copy**: **22/22**,
+no warnings. The same suite passes **22/22** on this checkout, so the audit does
+not depend on the working copy being the deployed one.
+
+**The live data reconciles.** `royal_bank.db`, `-wal` and `-shm` were pulled
+together (692,224 / 1,322,552 / 32,768 bytes). `PRAGMA integrity_check` = `ok`,
+`foreign_key_check` empty, 33 tables. All **681** ledger rows were replayed in
+`id` order: every `balance_after` equals the previous balance plus the amount
+(**0 chain mismatches**), and the closing ledger sum equals the stored balance
+for **every** one of the 25 accounts — 12 nations, 3 kingdoms, 6 wallets, the
+Union 27,649,541, the Crown 60,000,000, the Casino 100,020,881,876 and the
+Fishing Guild 998,891. Ledger `id`s run 1–685 over 681 rows: the four gaps are
+the deleted-member rows, exactly the append-only/erasure gap already documented
+as an owner decision. One `('nation', 5)` group sums to 30,000 with
+`balance_after = 0` — that is the `/nation delete` burn row for a nation that no
+longer exists, not a lost account.
+
+**The Tavily key works.** The live `.env` carries
+`TAVILY_API_KEY`/`LOOKUP_ENABLED=true`; a real query through
+`gilbert/lookup.py` (the sanctioned path, not a raw HTTP call) returned 3
+results, and `needs_lookup()` triggers on a Forge/netherite sentence. The
+lookup stays best-effort: it still returns `[]` rather than raising on failure.
+
+**Uploaded.** `README.md`, `AGENTS.md`, `BUG-FIXES.md`, plus the new
+`README-optimized.md`, `AGENTS-optimized.md` and `BUG-FIXES-optimized.md`, each
+with a `.bak-20261106-203220` copy taken from the live original first and a
+SHA-256 compared against the host after the write (all matched). No bot code was
+touched, so **no restart is needed**; the surface stays at **114 commands / 16
+cogs** and the suite at **22/22**.
+
+**Host hygiene note.** Three root files named `.bak-20261106-172901`,
+`-172912` and `-173008` (85,251 bytes each) are copies of `BUG-FIXES.md` whose
+basename was dropped by the deploy script in the 17:29 session. They are
+harmless and are left in place — backups are the rollback path and this pass
+prunes nothing — but they are recorded here so nobody mistakes them for a real
+document.
+
+**Left alone deliberately.** The Forge mod is still a README, `POST
+/api/preview` still does not exist, no economy number was changed and no backup
+was pruned: an audit that finds no bug in the code should not invent one.
 
 ### 2026-11-06 — Full-tree audit: local == live, shop/kits get their missing check (**uploaded; no restart needed**)
 
