@@ -57,14 +57,65 @@ def _cfg(name: str, default: str = "") -> str:
     return default
 
 
+def reply_text(payload) -> str | None:
+    """Pull the assistant text out of an OpenAI-compatible response.
+
+    Most providers answer ``{"choices": [{"message": {"content": ...}}]}``, but
+    the Cline gateway wraps that whole object one level deeper as
+    ``{"data": {"choices": [...]}}`` and some return ``content`` as a list of
+    parts. Both shapes are accepted here, so swapping the endpoint cannot
+    silently produce an empty reply.
+    """
+    node = payload
+    for _ in range(3):
+        if isinstance(node, dict) and "choices" in node:
+            break
+        node = node.get("data") if isinstance(node, dict) else None
+    if not isinstance(node, dict):
+        return None
+
+    choices = node.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    message = first.get("message")
+    if not isinstance(message, dict):
+        message = {}
+    content = message.get("content")
+    if content is None:
+        # Older/plain-completion providers put the text on the choice itself.
+        content = first.get("text")
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
+    if not isinstance(content, str):
+        return None
+    return content.strip() or None
+
 
 class GilbertAI:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """One chat-completions client.
+
+        The keyword overrides let a caller (the daily guide) run on a different
+        model, temperature and token budget than the Albert/Gilbert personas
+        while sharing every other setting. ``None`` means "read the env".
+        """
         self.base_url = _cfg("API_URL", "https://api.deepseek.com").rstrip("/")
         if self.base_url.endswith("/chat/completions"):
             self.base_url = self.base_url[: -len("/chat/completions")]
         self.api_key = _cfg("API_KEY", "")
-        self.model = _cfg("MODEL", _DEFAULT_MODEL) or _DEFAULT_MODEL
+        self.model = (model or _cfg("MODEL", _DEFAULT_MODEL) or _DEFAULT_MODEL).strip()
         if "api.deepseek.com" in self.base_url:
             alias = _DEEPSEEK_MODEL_ALIASES.get(self.model.lower())
             if alias and alias != self.model:
@@ -75,15 +126,19 @@ class GilbertAI:
                 )
                 self.model = alias
         try:
-            self.timeout = float(_cfg("TIMEOUT", "60"))
+            self.timeout = float(timeout) if timeout is not None else float(_cfg("TIMEOUT", "60"))
         except ValueError:
             self.timeout = 60.0
         try:
-            self.temperature = float(_cfg("TEMPERATURE", "0.6"))
+            self.temperature = (
+                float(temperature) if temperature is not None else float(_cfg("TEMPERATURE", "0.6"))
+            )
         except ValueError:
             self.temperature = 0.6
         try:
-            self.max_tokens = int(_cfg("MAX_TOKENS", "900"))
+            self.max_tokens = (
+                int(max_tokens) if max_tokens is not None else int(_cfg("MAX_TOKENS", "900"))
+            )
         except ValueError:
             self.max_tokens = 900
 
@@ -124,8 +179,14 @@ class GilbertAI:
                         )
                         return None
                     data = await resp.json()
-            content = data["choices"][0]["message"]["content"]
-            return content.strip() if content else None
+            content = reply_text(data)
+            if content is None:
+                logger.error(
+                    "Gilbert AI returned no message text (model=%s, keys=%s)",
+                    self.model,
+                    sorted(data)[:6] if isinstance(data, dict) else type(data).__name__,
+                )
+            return content
         except Exception as exc:  # pragma: no cover - network dependent
             logger.exception("Gilbert AI request failed: %s", exc)
             return None

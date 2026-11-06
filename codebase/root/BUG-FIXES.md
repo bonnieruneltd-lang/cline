@@ -20,6 +20,76 @@ Test:    the check that proves it (see "Verification" at the end).
 
 ---
 
+## The daily guide read raw constants as rules — 2026-11-06
+
+### A generated guide charged "50% Union dues" and invented a "3-cycle contract"
+
+**Symptom.** The first guide produced with the new prompt called Union dues "a
+**50 percent** charge on faction transaction bases" and said Crown contracts
+"run on a **3-cycle** structure". Both are wrong: dues are 1.75%/2% of a balance
+and 3 is a per-cycle *quota*, nothing to do with contract length.
+
+**Cause.** `daily_sync.collect_constants()` feeds the model every upper-case
+config value as `NAME = value`. Two of those names are traps when read by a
+model that has not seen the code: `UNION_MEMBER_DISCOUNT = 50` is the member
+*shop discount*, and `CONTRACTS_PER_CYCLE = {'nation': 1, 'kingdom': 3}` is a
+quota map. The prompt said "never invent a rate", so the model did not invent
+anything — it derived a plausible rule from a genuinely ambiguous input.
+
+**Impact.** The guide is the document players read to learn the economy, and it
+was published without review into `daily_guide.md` and Turso. A player could
+reasonably believe they owed 50% dues.
+
+**Fix.** `daily_sync.collect_rules()` and `collect_game_rules()` state the real
+rules in words, computed from the same functions the bot runs (`config`,
+`payouts`, `allin`, `coinflip`, `roulette`, `slots`): dues per account type, the
+net-worth tax and its destination, the 25/75 tranches, the 1/3 quota, the
+leverage ladder, case-ID prefixes, the shop discounts *labelled as discounts*,
+and each game's edge. `format_source()` marks that block **authoritative** and
+labels the raw constants "reference values; a name here is NOT a rule"; the
+prompt tells the model to quote the rules word for word.
+
+**Test.** `checks/check_daily_sync.py` pins the wording (`"nation 1.75%, kingdom
+2%"`, `"discount on purchases, never a fee"`, `"1 per nation, 3 per kingdom"`,
+`"25% is claimable at approval and 75% at release"`, the three game edges) and
+that the rules block precedes the constants in the source.
+
+---
+
+## The Cline gateway nested its reply one level deeper — 2026-11-06
+
+### Every Albert/Gilbert reply from the Cline endpoint came back empty
+
+**Symptom.** After pointing `CHATBOT_API_URL` at the Cline gateway
+(`https://api.cline.bot/api/v1`), both negotiators answered every message with
+their canned "my line to the Union's records has gone down" fallback. The bot
+logged no HTTP error: the request was a clean `200`.
+
+**Cause.** The gateway wraps the OpenAI body in an envelope —
+`{"data": {"choices": [{"message": {"content": …}}]}}` — while
+`GilbertAI.complete()` read `data["choices"][0]["message"]["content"]`
+directly. That raised `KeyError`, which the `except Exception` around the call
+swallowed, so the failure looked like a network outage instead of a shape
+mismatch.
+
+**Impact.** Total loss of the AI personas on that provider while the logs showed
+a healthy `200`, which is the worst kind of integration bug: nothing to see, and
+the handler's graceful fallback hides it from the players too.
+
+**Fix.** A pure `reply_text(payload)` parser in `gilbert/ai.py` walks up to three
+`data` levels, accepts both shapes, joins `content` parts when a provider
+returns a list, falls back to a plain-completion `choices[0]["text"]`, and
+returns `None` only when there is genuinely no text. `complete()` now logs the
+top-level payload keys when the text is empty, so a future shape change is
+visible in one line.
+
+**Test.** `checks/check_gilbert.py` pins the plain OpenAI shape, the Cline
+envelope, content parts, the legacy `text` field, and the empty/blank/junk/`None`
+cases. A live call against the gateway returned a 2,666-character in-character
+reply (see README section 12, 2026-11-06).
+
+---
+
 ## Crown case IDs shared the Union counter — 2026-10-29
 
 ### The first Crown case for a tag would be CR-TAG-004, not CR-TAG-001

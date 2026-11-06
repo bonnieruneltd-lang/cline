@@ -10,6 +10,19 @@ can be moved into the `settings` table.
 """
 
 # ---------------------------------------------------------------------------
+# The server platform. Albert, Gilbert and the daily guide must all assume the
+# same build, so it is written down once here instead of in each prompt.
+# ---------------------------------------------------------------------------
+MINECRAFT_VERSION = "1.20.1"
+MINECRAFT_LOADER = "Forge 47.x"
+MINECRAFT_PLATFORM_NOTE = (
+    "The server runs Minecraft Java Edition 1.20.1 on Forge 47.x (not NeoForge). "
+    "Anything added in 1.21 or later, or available only on NeoForge, does not "
+    "exist here; if a player asks for it, say so plainly and offer the 1.20.1 "
+    "equivalent."
+)
+
+# ---------------------------------------------------------------------------
 # Royal Court Decrees: Nation Payouts (every 14 days)
 # ---------------------------------------------------------------------------
 NATION_BASE = 20_000                    # Rule 7.1  Base Allowance

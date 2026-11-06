@@ -115,6 +115,43 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 
 ### Last known live state
 
+2026-11-06 (**Cline models for the personas + guide, live lookups; restart
+required**). Working tree is clean; **21/21**, `compileall`/`pyflakes` clean,
+surface pinned at **114 / 16** and unchanged (no new command). Uploaded this
+session, **not yet loaded** — the process needs a panel restart:
+
+- `gilbert/ai.py`: `reply_text()` accepts the Cline envelope
+  `{"data":{"choices":…}}` *and* plain OpenAI, and `GilbertAI()` takes
+  `model`/`temperature`/`max_tokens`/`timeout` overrides. Anything that reads
+  the reply must go through `reply_text()`, never `payload["choices"]`.
+- `gilbert/lookup.py`: Tavily lookup for Minecraft facts. `needs_lookup()` is
+  the only trigger (pure keyword test), the block is `PINNED SERVER BUILD` +
+  `LIVE WEB RESULTS`, and it can never override economy rules. It must stay
+  non-fatal and cached; a lookup failure is not a reason to drop a reply.
+- `config.MINECRAFT_VERSION` / `MINECRAFT_LOADER` / `MINECRAFT_PLATFORM_NOTE`
+  are the single source for "1.20.1 on Forge 47.x, not NeoForge". Do not hard-code
+  a different version in a prompt or doc.
+- The guide runs on `DAILY_GUIDE_MODEL` / `DAILY_GUIDE_TEMPERATURE` /
+  `DAILY_GUIDE_MAX_TOKENS`, separate from the personas, and its prompt asks for a
+  nine-section document with worked examples and an FAQ.
+
+Live `.env` (backed up as `.env.bak-20261106-*`): `CHATBOT_API_URL=https://api.cline.bot/api/v1`,
+`CHATBOT_MODEL=reflection/beam-1.0-501b-a23b`, 0.75 / 16,000 tokens / 240 s;
+`DAILY_GUIDE_MODEL=nvidia/nemotron-3.5-super-vl`, 0.25 / 12,000;
+`TAVILY_API_KEY` set. Model ids come from `GET /api/v1/models`.
+
+**The Cline key was out of credit at the end of the session** (`current_balance`
+0.008896, every call `402 insufficient_credits`). The key is already in `.env`, so
+topping up at <https://app.cline.bot/credits> needs no restart — but until then
+the personas use their fallback line and the guide uses `fallback_guide()`. If a
+restart is needed sooner, revert the four `CHATBOT_*` lines from
+`.env.bak-20261106-174527` to stay on DeepSeek.
+
+The guide's material now carries an **ECONOMY RULES** block built by
+`daily_sync.collect_rules()` / `collect_game_rules()`. That exists because a raw
+constant list was mis-read once ("50%" dues, a "3-cycle" contract): if you add an
+economy rate, state it there too, and keep `check_daily_sync.py` in step.
+
 2026-11-06 (**full-file audit; the 114-command build is live**). Working tree
 `316964b` plus this docs commit, clean and pushed; live tree **85 project files**,
 all SHA-256 identical to this checkout (plus the generated `daily_guide.md`,

@@ -219,9 +219,17 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `DAILY_GUIDE_CHANNEL_ID` | Channel that receives the daily guide |
 | `DAILY_GUIDE_GUILD_ID` | Guild id stored on each guide row (falls back to `GUILD_ID`, then the bot's only guild) |
 | `DAILY_GUIDE_PATH` | Also write the guide to this Markdown file |
-| `DAILY_GUIDE_SOURCE_CHARS` | Max characters of bot material sent to the model (default 24000) |
-| `DAILY_GUIDE_MAX_CHARS` | Max guide length returned (default 8000) |
+| `DAILY_GUIDE_SOURCE_CHARS` | Max characters of bot material sent to the model (default 60000) |
+| `DAILY_GUIDE_MAX_CHARS` | Max guide length returned (default 24000) |
 | `DAILY_GUIDE_LANGUAGE` | Language the guide is written in (default English) |
+| `DAILY_GUIDE_MODEL` | Model for the guide alone (default: `CHATBOT_MODEL`) |
+| `DAILY_GUIDE_TEMPERATURE` | Guide temperature, clamped 0–1 (default 0.25) |
+| `DAILY_GUIDE_MAX_TOKENS` | Guide output token budget (default 12000) |
+| `TAVILY_API_KEY` | Enables live Minecraft lookups for Albert and Gilbert when set |
+| `LOOKUP_ENABLED` | `false` turns the Albert/Gilbert web lookup off (default on with a key) |
+| `LOOKUP_MAX_RESULTS` | Search results per lookup (default 4, max 8) |
+| `LOOKUP_TIMEOUT` | Lookup timeout in seconds (default 12) |
+| `LOOKUP_MAX_CHARS` | Characters of search results added to the prompt (default 2200) |
 
 ### Database
 
@@ -1207,6 +1215,79 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-06 — Albert/Gilbert on a Cline model with live Minecraft lookups; longer, fuller guide (uploaded; **restart required**)
+
+**Change.**
+
+- **`gilbert/ai.py`** takes per-instance overrides (`model`, `temperature`,
+  `max_tokens`, `timeout`) so one process can run two models, and it now
+  unwraps the Cline gateway envelope `{"data": {"choices": [...]}}` as well as
+  the plain OpenAI shape. Before this, every reply from that endpoint parsed as
+  empty and Albert/Gilbert answered with their "my line to the records has gone
+  down" fallback — see `BUG-FIXES.md`.
+- **New `gilbert/lookup.py`.** A narrow, defensive Tavily lookup:
+  `needs_lookup()` is a pure keyword test (blocks, items, farms, redstone,
+  villagers, versions, Forge… or an explicit "look it up"), so ordinary haggling
+  never pays a search. A hit is queried version-scoped
+  (`Minecraft 1.20.1 Forge 47.x: …`), capped at 4 results / 2,200 characters /
+  12 s, cached for 15 minutes, and returned as a `PINNED SERVER BUILD` +
+  `LIVE WEB RESULTS` prompt block that explicitly cannot override the Union or
+  Crown rules. Any error returns `None`; the negotiation is never blocked.
+- **The platform is written down once**: `config.MINECRAFT_VERSION`,
+  `MINECRAFT_LOADER` and `MINECRAFT_PLATFORM_NOTE` ("1.20.1 on Forge 47.x, not
+  NeoForge"). Both system prompts quote it, `cogs/contract.py` always sends it
+  as its own system message, and the guide's source material carries it.
+- **The guide runs on its own model and budget**: `DAILY_GUIDE_MODEL`,
+  `DAILY_GUIDE_TEMPERATURE` (default 0.25), `DAILY_GUIDE_MAX_TOKENS` (12,000).
+  Its prompt now asks for a complete document — nine numbered sections, every
+  command listed once, worked payout and `/daily` examples, a day-in-the-life
+  walkthrough and a six-question FAQ — and the word budget is derived from
+  `DAILY_GUIDE_MAX_CHARS` so the two cannot drift. Caps raised to **24,000
+  characters out / 60,000 characters in**.
+
+**Live configuration (host `.env`, backed up first).**
+`CHATBOT_API_URL=https://api.cline.bot/api/v1`,
+`CHATBOT_MODEL=reflection/beam-1.0-501b-a23b` (personas, 0.75, 16,000 tokens,
+240 s), `DAILY_GUIDE_MODEL=nvidia/nemotron-3.5-super-vl` (guide, 0.25, 12,000),
+`TAVILY_API_KEY` set. Model ids were read from `GET /api/v1/models` rather than
+guessed.
+
+**Blocker — the Cline key has no credit left.** By the end of the verification
+runs the key reported `current_balance: 0.008896` and every call returned
+`HTTP 402 insufficient_credits`. Nothing in this build is wrong: the same calls
+succeeded minutes earlier (a 2,666-character Beam persona reply and a
+19,416-character guide). Top up at <https://app.cline.bot/credits>; **adding
+credit needs no restart** because the key is already in `.env`. Until then
+Albert and Gilbert answer with their "my line to the records has gone down"
+fallback and the guide falls back to its deterministic text — both graceful, but
+obviously degraded. To stay on DeepSeek instead, revert the four `CHATBOT_*`
+lines to the previous values (kept in `.env.bak-20261106-174527`).
+
+**Verified.** `checks/run_all.py` **21/21**, `compileall`/`pyflakes` clean,
+surface unchanged at **114 commands / 16 cogs** (no new command). `check_gilbert.py`
+now pins both response shapes, the per-instance overrides and the lookup
+decision/format/cap logic; `check_daily_sync.py` pins the guide's model,
+temperature, token budget, clamping, the comprehensiveness of its prompt and the
+**ECONOMY RULES** facts. Against the live gateway: a real Beam persona call
+returned a 2,666-character in-character reply that quoted the case ID and the
+1.20.1/Forge limit, a real Tavily lookup returned a 2,200-character block, and a
+real Super VL guide run produced a 19,416-character document with all nine
+sections, all 114 commands and a FAQ.
+
+**Fixed while verifying.** That first generated guide read two raw constants as
+rules: it called Union dues "a **50 percent** charge" (that 50 is
+`UNION_MEMBER_DISCOUNT`, the member shop discount) and invented "a **3-cycle**
+contract structure" (that 3 is the kingdom's per-cycle *quota*). The prompt
+already said not to invent numbers, so the real defect was the input: raw
+`NAME = value` lines are not self-describing. `daily_sync.collect_rules()` and
+`collect_game_rules()` now state the actual rules in words, computed from the
+same functions the bot runs (dues 1.75%/2%, the 5% net-worth tax and its
+destination, the 25/75 tranches, the 1/3 quota, the leverage ladder, the four
+game edges), the source marks that block authoritative and warns that a constant
+name is not a rule, and `check_daily_sync.py` pins the exact wording.
+
+**A restart is required to load this code**; `.env` changes take effect with it.
 
 ### 2026-11-06 — Full-file audit: the live process is on the 114-command build (docs only)
 

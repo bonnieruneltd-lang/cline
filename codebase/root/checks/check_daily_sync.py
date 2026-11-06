@@ -67,8 +67,47 @@ messages = daily_sync.build_guide_messages("MATERIAL")
 check("prompt has system+user", len(messages) == 2)
 check("prompt asks for how it works",
       "how the Royal Court bot works" in messages[0]["content"])
-check("prompt forbids invention", "Do not invent" in messages[0]["content"])
+check("prompt forbids invention", "never invent a command" in messages[0]["content"])
 check("prompt carries the material", "MATERIAL" in messages[1]["content"])
+check("prompt asks for a complete document", "COMPLETE document" in messages[0]["content"])
+check("prompt asks for an FAQ", "FAQ of at least six" in messages[0]["content"])
+check("prompt asks for worked examples", "worked example" in messages[0]["content"])
+check("prompt pins the platform", "1.20.1" in messages[0]["content"])
+check("prompt sizes words from chars",
+      f"{daily_sync.DEFAULT_GUIDE_MAX_CHARS // daily_sync.CHARS_PER_WORD} words"
+      in messages[0]["content"], messages[0]["content"][-200:])
+wide = daily_sync.build_guide_messages("MATERIAL", max_chars=6000)
+check("smaller cap asks for fewer words", "1000 words" in wide[0]["content"])
+check("default guide cap is roomy",
+      daily_sync.DEFAULT_GUIDE_MAX_CHARS >= 20000, daily_sync.DEFAULT_GUIDE_MAX_CHARS)
+check("default source cap is roomy",
+      daily_sync.DEFAULT_GUIDE_SOURCE_CHARS >= 50000, daily_sync.DEFAULT_GUIDE_SOURCE_CHARS)
+
+# The guide can run on its own model, temperature and token budget.
+with patch.dict(os.environ, {
+    "DAILY_GUIDE_MODEL": "nvidia/nemotron-3.5-super-vl",
+    "DAILY_GUIDE_TEMPERATURE": "0.2",
+    "DAILY_GUIDE_MAX_TOKENS": "20000",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide model from env", ds.guide_model == "nvidia/nemotron-3.5-super-vl", ds.guide_model)
+    check("guide temperature from env", ds.guide_temperature == 0.2, ds.guide_temperature)
+    check("guide tokens from env", ds.guide_max_tokens == 20000, ds.guide_max_tokens)
+
+with patch.dict(os.environ, {
+    "DAILY_GUIDE_MODEL": "", "DAILY_GUIDE_TEMPERATURE": "", "DAILY_GUIDE_MAX_TOKENS": "",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide model defaults to the chat model", ds.guide_model == "", ds.guide_model)
+    check("guide temperature defaults cool",
+          ds.guide_temperature == daily_sync.DEFAULT_GUIDE_TEMPERATURE, ds.guide_temperature)
+    check("guide token budget defaults big",
+          ds.guide_max_tokens == daily_sync.DEFAULT_GUIDE_MAX_TOKENS, ds.guide_max_tokens)
+
+with patch.dict(os.environ, {"DAILY_GUIDE_TEMPERATURE": "5", "DAILY_GUIDE_MAX_TOKENS": "1"}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide temperature is clamped", ds.guide_temperature == 1.0, ds.guide_temperature)
+    check("guide token floor is enforced", ds.guide_max_tokens == 512, ds.guide_max_tokens)
 
 # --- env driven config (nothing hard-bound) ---------------------------------
 with patch.dict(os.environ, {
@@ -240,10 +279,36 @@ check("source collects checks",
       any(c.startswith("check_") for c in source["checks"]))
 check("source collects modules",
       any(c.startswith("config:") for c in source["modules"]))
+check("source collects rules", len(source["rules"]) >= 15, len(source["rules"]))
+
+# The RULES block exists because raw constants were read as rules: 50% is a
+# member shop discount, not dues, and 3 is a kingdom quota, not a three-cycle
+# contract. Pin the wording that a guide can safely copy.
+rules = " ".join(source["rules"])
+check("rules state the real dues",
+      "nation 1.75%, kingdom 2%" in rules, rules[:300])
+check("rules separate the discount from dues",
+      "discount on purchases, never a fee" in rules)
+check("rules state the contract quota", "1 per nation, 3 per kingdom" in rules)
+check("rules state the 25/75 split",
+      "25% is claimable at approval and 75% at release" in rules)
+check("rules state the individual cap", "capped at 100,000,000 credits" in rules)
+check("rules state the leverage ladder", "3x the party's balance up to" in rules)
+check("rules state the case-ID prefixes", "`UN-<TAG>-<NNN>`" in rules and "`CR-<TAG>-<NNN>`" in rules)
+check("rules price the slots", "8.78%" in rules)
+check("rules price roulette", "2.70%" in rules)
+check("rules price the all-in", "9.09%" in rules)
+check("rules price the coinflip", "50% win chance" in rules and "0% payout" not in rules)
 
 text = daily_sync.format_source(source)
 check("formatted source has command surface", "COMMAND SURFACE" in text)
 check("formatted source has constants", "ECONOMY CONSTANTS" in text)
+check("formatted source marks the rules authoritative",
+      "ECONOMY RULES (authoritative" in text)
+check("formatted source warns constants are not rules",
+      "a name here is NOT a rule" in text)
+check("formatted source puts the rules before the constants",
+      text.index("ECONOMY RULES") < text.index("ECONOMY CONSTANTS"))
 check("formatted source has modules", "MODULES" in text)
 check("formatted source caps length",
       len(daily_sync.format_source(source, max_chars=50)) == 50)

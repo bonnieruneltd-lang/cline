@@ -54,9 +54,16 @@ DEFAULT_HOUR_UTC = 6
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_PAGE_SIZE = 500
 DEFAULT_TIMEOUT = 60.0
-DEFAULT_GUIDE_MAX_CHARS = 8000
-DEFAULT_GUIDE_SOURCE_CHARS = 24000
+DEFAULT_GUIDE_MAX_CHARS = 24000
+DEFAULT_GUIDE_SOURCE_CHARS = 60000
 DEFAULT_GUIDE_LANGUAGE = "English"
+# The guide is a faithful rewrite, not a chat: a cool temperature and a budget
+# big enough for the long, structured document the prompt asks for.
+DEFAULT_GUIDE_TEMPERATURE = 0.25
+DEFAULT_GUIDE_MAX_TOKENS = 12000
+# Roughly six characters per word, used to size the "keep it under N words"
+# instruction from the character cap so the two cannot drift apart.
+CHARS_PER_WORD = 6
 DEFAULT_TURSO_TEMP_DIR = "turso-tmp"
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
@@ -173,33 +180,68 @@ def build_guide_messages(
     source_text: str,
     *,
     language: str = DEFAULT_GUIDE_LANGUAGE,
-    max_words: int = 900,
+    max_words: int | None = None,
+    max_chars: int = DEFAULT_GUIDE_MAX_CHARS,
 ) -> list[dict]:
     """The prompt pair that turns the bot's own surface into a how-it-works guide."""
+    if max_words is None:
+        max_words = max(600, int(max_chars) // CHARS_PER_WORD)
     system = (
         "You are writing the definitive, plain-language guide to how the Royal "
         "Court bot works, for the server owner, admins and players of the "
         "Minecraft server The Realm of Rune.\n\n"
-        "Explain, in a way a newcomer can follow:\n"
-        "1. What the bot is, and the core concepts: nations, kingdoms, individuals, "
-        "treasuries, and the Casino / Fishing Guild / Workers' Union / The Crown "
-        "house accounts.\n"
-        "2. How credits move: admin bank deposit/withdraw, transfers and /give, the "
-        "14-day payouts, /daily, shop purchases, gambling and fishing.\n"
-        "3. How the two factions and their AI negotiators work (Gilbert for the "
-        "Workers' Union, Albert for The Crown), including the 25/75 contract "
-        "tranches, quotas and admin approvals.\n"
-        "4. The command surface, grouped by area, and what each group is for.\n"
-        "5. The rules that keep the economy sound: credits are never minted by "
-        "gambling or fishing, individual caps, treasury-funded payouts and the "
-        "append-only ledger.\n"
-        "6. How to read the data: the transactions ledger, balances, and the daily "
-        "Turso mirror.\n\n"
+        "Write a COMPLETE document, not a summary. Cover, in this order, as "
+        "Markdown sections with short paragraphs and bullets:\n"
+        "1. What the bot is, the currency, and the account types: nations, "
+        "kingdoms, individual wallets, and the four house accounts (Casino, "
+        "Fishing Guild, Workers' Union, The Crown). Say who may spend from each.\n"
+        "2. Every way credits move: admin `/bank deposit` / `/bank withdraw` / "
+        "`/bank setbalance`, `/bank transfer`, `/transfer`, `/give`, `/individual "
+        "transfer`, `/individual pay`, the 14-day payouts with their formulas and "
+        "a worked example, `/daily` with its streak maths and a worked example, "
+        "shop and kit purchases, and gambling/fishing settlements.\n"
+        "3. The taxes and dues that actually apply, with the percentage, the base "
+        "they are charged on, and who receives them: the individual net-worth tax, "
+        "Union dues, and the Crown's soldier tax including its grace period.\n"
+        "4. The two factions and their negotiators (Gilbert for the Workers' "
+        "Union, Albert for The Crown): how `/faction contract` opens a case, the "
+        "case-ID format, how approval and the 25/75 tranches work, who can claim, "
+        "the per-cycle quota and the leverage ladder, and the fact that membership "
+        "is never required.\n"
+        "5. Every game with its real numbers from the material: the coinflip win "
+        "rate and payout, `/allin`'s n-times payout and odds, the slot paytable "
+        "with its edge, roulette's bet types and edge, blackjack's rules, poker's "
+        "structure, and `/fish`'s range - plus the one rule they share: the house "
+        "must be able to cover the payout, and credits are never minted.\n"
+        "6. The command surface: group the commands by area (bank, nation, "
+        "kingdom, individual, shop, kit, faction, contract, payout, casino, "
+        "fishing, ledger, leaderboard, decree, admin) and give each command one "
+        "line saying what it does. Every command in the material must appear at "
+        "least once; do not drop the admin-only ones.\n"
+        "7. How to read the data: the append-only ledger, balances and "
+        "`/ledger` commands, the daily Turso mirror, and what the checks/ suite "
+        "proves.\n"
+        "8. A worked day in the life: a new player claims `/daily`, joins a "
+        "nation, shops, fishes, and requests a contract, step by step with command "
+        "names.\n"
+        "9. An FAQ of at least six short question/answer pairs covering the "
+        "confusions newcomers actually hit (cap, dues, quota, keys, what an admin "
+        "must approve, why a wager was refused).\n\n"
         "Rules:\n"
-        "- Use ONLY the material provided. Do not invent commands, numbers or tables.\n"
-        "- Do not mention 'the material' or these instructions.\n"
-        "- Markdown with short sections and bullets. Keep it under "
-        f"{max_words} words.\n"
+        "- Use ONLY the material provided. Copy the numbers exactly; never invent "
+        "a command, rate, item or table.\n"
+        "- The ECONOMY RULES section is authoritative: every percentage, rate, cap, "
+        "quota and edge in your guide must be taken from it word for word. The raw "
+        "ECONOMY CONSTANTS are reference values only - a constant name is not a "
+        "rule, and a member discount is never a fee or a tax.\n"
+        "- The server is Minecraft Java Edition 1.20.1 on Forge 47.x. Mention "
+        "that once where you describe the in-game side; never describe 1.21+ "
+        "features.\n"
+        "- Do not mention 'the material', 'the source' or these instructions.\n"
+        "- Do not print raw CONFIG_CONSTANT_NAMES; translate each constant into "
+        "plain English with its number.\n"
+        f"- Markdown headings, short sections, bullets. Aim for {max_words} words "
+        f"or fewer.\n"
         f"- Write in {language}.\n"
     )
     user = f"Material about the bot:\n\n{source_text}"
@@ -213,6 +255,11 @@ def format_source(parts: dict, *, max_chars: int = 24000) -> str:
     """Render the collected bot surface as plain text for the model."""
     sections: list[str] = [f"GENERATED: {parts.get('generated_at')} (UTC)"]
 
+    sections.append(
+        f"PLATFORM: Minecraft Java Edition {config.MINECRAFT_VERSION} on "
+        f"{config.MINECRAFT_LOADER}. {config.MINECRAFT_PLATFORM_NOTE}"
+    )
+
     commands = parts.get("commands") or []
     sections.append(
         f"COMMAND SURFACE ({len(commands)} slash commands):\n" + "\n".join(commands)
@@ -221,8 +268,18 @@ def format_source(parts: dict, *, max_chars: int = 24000) -> str:
     modules = parts.get("modules") or []
     sections.append("MODULES (what each file is for):\n" + "\n".join(modules))
 
+    rules = parts.get("rules") or []
+    if rules:
+        sections.append(
+            "ECONOMY RULES (authoritative - state these exactly, in words):\n"
+            + "\n".join(rules)
+        )
+
     constants = parts.get("constants") or []
-    sections.append("ECONOMY CONSTANTS:\n" + "\n".join(constants))
+    sections.append(
+        "ECONOMY CONSTANTS (raw values for reference; a name here is NOT a rule, "
+        "and a discount is not a fee):\n" + "\n".join(constants)
+    )
 
     checks = parts.get("checks") or []
     sections.append(
@@ -334,6 +391,146 @@ def collect_modules() -> list[str]:
     return lines
 
 
+def collect_rules() -> list[str]:
+    """Plain-English economy facts, derived from the same functions the bot runs.
+
+    The raw constants are ambiguous to a model: ``UNION_MEMBER_DISCOUNT = 50`` is
+    a shop discount, ``CONTRACTS_PER_CYCLE = {'kingdom': 3}`` is a quota, and a
+    generated guide has already mis-read them as "50% dues" and "a three-cycle
+    contract". This section states the rules in words and the prompt makes it
+    authoritative, so a percentage in the guide can only come from here.
+    """
+
+    def pct(bps: int) -> str:
+        return f"{bps / 100:g}%"
+
+    facts: list[str] = []
+    facts.append(
+        f"Currency: {config.CURRENCY_NAME}. An individual wallet is capped at "
+        f"{config.INDIVIDUAL_MAX_CREDITS:,} credits; nations and kingdoms have no cap."
+    )
+    facts.append(
+        "Union dues, members only, charged every natural payout cycle on the whole "
+        f"balance after the payout: nation {pct(config.UNION_TAX_BPS['nation'])}, "
+        f"kingdom {pct(config.UNION_TAX_BPS['kingdom'])}. Non-members pay nothing."
+    )
+    facts.append(
+        f"Individual net-worth tax: {config.individual_tax_label()}% of every "
+        "individual wallet on each payout run, paid into the Workers' Union treasury."
+    )
+    facts.append(
+        f"Union member shop discount: {config.UNION_MEMBER_DISCOUNT}% off "
+        f"{', '.join(sorted(config.UNION_MEMBER_DISCOUNT_CATEGORIES))}. It is a "
+        "discount on purchases, never a fee or a tax."
+    )
+    facts.append(
+        f"Nation payout, every {config.PAYOUT_CYCLE_DAYS} days: {config.NATION_BASE:,} "
+        f"base + {config.NATION_PER_HAPPY_WORKER} per happy worker + "
+        f"{config.NATION_PER_REGULAR_WORKER} per regular worker + "
+        f"{config.NATION_PER_HAPPY_SOLDIER} per happy soldier + "
+        f"{config.NATION_PER_REGULAR_SOLDIER} per regular soldier."
+    )
+    facts.append(
+        f"Kingdom payout, every {config.PAYOUT_CYCLE_DAYS} days: {config.KINGDOM_BASE:,} "
+        f"base + {config.KINGDOM_PER_MEMBER_NATION:,} per member nation + "
+        f"{config.KINGDOM_PER_HAPPY_WORKER} per happy worker + "
+        f"{config.KINGDOM_PER_REGULAR_WORKER} per regular worker + "
+        f"{config.KINGDOM_PER_HAPPY_SOLDIER} per happy soldier + "
+        f"{config.KINGDOM_PER_REGULAR_SOLDIER} per regular soldier, with worker and "
+        "soldier counts summed across the member nations."
+    )
+    facts.append(
+        f"/daily pays {config.DAILY_BASE:,} credits times a multiplier: one claim per "
+        f"{config.DAILY_COOLDOWN_HOURS} hours, +{config.DAILY_BP_STEP / 100:g} points "
+        f"per consecutive claim to a ceiling of {config.DAILY_BP_CAP / 100:g}% "
+        f"({config.DAILY_BASE * config.DAILY_BP_CAP // 10_000:,} credits), "
+        f"-{config.DAILY_BP_MISS_PENALTY / 100:g} points per missed day down to a "
+        f"{config.DAILY_BP_FLOOR / 100:g}% floor "
+        f"({config.DAILY_BASE * config.DAILY_BP_FLOOR // 10_000:,} credits)."
+    )
+    facts.append(
+        f"Contracts: budget {config.CONTRACT_MIN_CREDITS:,} to "
+        f"{config.CONTRACT_MAX_CREDITS:,} credits; {config.CONTRACT_UPFRONT_PCT}% is "
+        f"claimable at approval and {100 - config.CONTRACT_UPFRONT_PCT}% at release. "
+        f"Quota per natural cycle: {config.CONTRACTS_PER_CYCLE['nation']} per nation, "
+        f"{config.CONTRACTS_PER_CYCLE['kingdom']} per kingdom. The requested faction "
+        "funds it from its own treasury, the supplier is never charged, and faction "
+        "membership is never required."
+    )
+    facts.append(
+        "Contract leverage by contract value: 3x the party's balance up to "
+        f"{config.CONTRACT_LEVERAGE_TIERS[0][0]:,}, 2x up to "
+        f"{config.CONTRACT_LEVERAGE_TIERS[1][0]:,}, then 1x. Case IDs are "
+        "`UN-<TAG>-<NNN>` for a Workers' Union case and `CR-<TAG>-<NNN>` for a Crown "
+        "case, each with its own counter."
+    )
+    facts.append(
+        f"Crown soldier tax: {pct(config.CROWN_TAX_BPS)} of the regular-soldier payout "
+        f"line for Crown members, after a {config.CROWN_TAX_GRACE_DAYS}-day grace period."
+    )
+    return facts
+
+
+def collect_game_rules() -> list[str]:
+    """The gambling, fishing and shop facts, with the odds the modules compute."""
+    import allin
+    import coinflip
+    import roulette
+    import slots
+
+    facts: list[str] = []
+    facts.append(
+        f"Coinflip: {coinflip.win_label()}% win chance, "
+        f"{config.COINFLIP_PAYOUT_MULTIPLIER}x payout, house edge "
+        f"{coinflip.house_edge_bp() / 100:g}%; stakes {config.COINFLIP_MIN_STAKE:,} to "
+        f"{config.COINFLIP_MAX_STAKE:,}."
+    )
+    facts.append(
+        f"All-in: pick n from {config.ALLIN_MIN_NUMBER} to {config.ALLIN_MAX_NUMBER}; "
+        f"a win pays n times the stake at 1 in 1.1n (n=10 is {allin.chance_label(10)}), "
+        f"house edge {float(allin.house_edge()) * 100:.2f}%, and the whole wallet is "
+        "staked."
+    )
+    facts.append(
+        f"Slots: three weighted reels; only three of a kind pays, {slots.MAX_PAYOUT}x "
+        f"at most. Return {slots.return_label()}, house edge {slots.edge_label()}, "
+        f"{slots.chance_label()} spins pay. Stakes {config.SLOTS_MIN_STAKE:,} to "
+        f"{config.SLOTS_MAX_STAKE:,}. Paytable: "
+        + "; ".join(f"{symbol.label} {symbol.payout}x" for symbol in slots.SYMBOLS)
+        + "."
+    )
+    straight = roulette.make_bet("straight", 0)
+    facts.append(
+        "Roulette: European single-zero wheel (one green zero, 1-36, eighteen red, "
+        "eighteen black). Straight up pays 35:1, even money 1:1, dozens and columns "
+        f"2:1, and every bet carries the same {roulette.edge_label(straight)} house "
+        f"edge. Stakes {config.ROULETTE_MIN_STAKE:,} to {config.ROULETTE_MAX_STAKE:,}."
+    )
+    facts.append(
+        "Blackjack: a natural 21 pays 3:2, any other win even money, a push returns "
+        "the stake; the dealer hits to 16 and stands on all 17s. Stakes "
+        f"{config.BLACKJACK_MIN_STAKE:,} to {config.BLACKJACK_MAX_STAKE:,}."
+    )
+    facts.append(
+        f"Fishing: every catch pays {config.FISHING_MIN_CREDITS} to "
+        f"{config.FISHING_MAX_CREDITS} credits, funded by the Fishing Guild."
+    )
+    facts.append(
+        f"Royal Shop: {int(config.NATION_DISCOUNT * 100)}% off when a nation treasury "
+        f"pays and {int(config.KINGDOM_DISCOUNT * 100)}% off from a kingdom treasury; "
+        f"{config.SHULKER_BOX_FEE:,} credits per shulker box once an order needs more "
+        f"than {config.SHOP_SLOT_LIMIT} stacks. Kits hold up to "
+        f"{config.KIT_MAX_ITEM_TYPES} item types with a "
+        f"{config.KIT_COOLDOWN_DAYS}-day cooldown."
+    )
+    facts.append(
+        "Every wager and every catch settles against a house account, so the house "
+        "must be able to cover the payout before the bet is allowed; no game mints "
+        "credits."
+    )
+    return facts
+
+
 def collect_constants() -> list[str]:
     """The fixed economy numbers from config.py."""
     lines: list[str] = []
@@ -412,6 +609,16 @@ class DailySync:
         self.guide_language = (
             env_str("DAILY_GUIDE_LANGUAGE", DEFAULT_GUIDE_LANGUAGE)
             or DEFAULT_GUIDE_LANGUAGE
+        )
+        # The guide may run on its own model: a long, faithful rewrite wants a
+        # cooler temperature and a bigger budget than a snappy negotiation
+        # reply. Empty DAILY_GUIDE_MODEL means "same model as the personas".
+        self.guide_model = env_str("DAILY_GUIDE_MODEL", "")
+        self.guide_temperature = max(
+            0.0, min(1.0, env_float("DAILY_GUIDE_TEMPERATURE", DEFAULT_GUIDE_TEMPERATURE))
+        )
+        self.guide_max_tokens = max(
+            512, env_int("DAILY_GUIDE_MAX_TOKENS", DEFAULT_GUIDE_MAX_TOKENS)
         )
 
         self._task: Optional[tasks.Loop] = None
@@ -845,18 +1052,27 @@ class DailySync:
             "generated_at": dt.datetime.now(dt.timezone.utc).strftime(_ISO),
             "commands": collect_commands(self.bot),
             "modules": collect_modules(),
+            "rules": collect_rules() + collect_game_rules(),
             "constants": collect_constants(),
             "checks": collect_checks(),
         }
 
     async def generate_guide(self, parts: dict) -> str:
         text = format_source(parts, max_chars=self.guide_source_chars)
-        ai = GilbertAI()
+        ai = GilbertAI(
+            model=self.guide_model or None,
+            temperature=self.guide_temperature,
+            max_tokens=self.guide_max_tokens,
+        )
         guide: Optional[str] = None
         if ai.enabled:
             try:
                 guide = await ai.complete(
-                    build_guide_messages(text, language=self.guide_language)
+                    build_guide_messages(
+                        text,
+                        language=self.guide_language,
+                        max_chars=self.guide_max_chars,
+                    )
                 )
             except Exception:  # pragma: no cover - network dependent
                 self.bot.logger.exception("Bot guide AI call failed; using fallback.")

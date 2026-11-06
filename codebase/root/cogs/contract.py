@@ -39,6 +39,7 @@ from checks import admin_only
 from contract_limits import budget_allowed, limit_explanation, max_budget_for_funds
 from database import InsufficientFunds
 from gilbert.ai import GilbertAI
+from gilbert.lookup import lookup_for, platform_block
 from gilbert.prompt import GILBERT_SYSTEM_PROMPT, classify_tier, contract_context
 from utils import account_autocomplete, account_emoji, money, parse_account
 
@@ -510,7 +511,24 @@ class Contract(commands.Cog):
             )
             system_prompt = GILBERT_SYSTEM_PROMPT
 
-        messages = [{"role": "system", "content": system_prompt + "\n\n" + context}]
+        messages = [
+            {"role": "system", "content": system_prompt + "\n\n" + context},
+            {"role": "system", "content": platform_block()},
+        ]
+        # Minecraft mechanics go stale, and the realm is pinned to 1.20.1/Forge.
+        # When the player's message leans on game knowledge, attach live results
+        # as their own message so the rules above stay the authority. Any lookup
+        # failure returns None and the negotiation carries on untouched.
+        if user_text:
+            try:
+                live = await lookup_for(user_text)
+            except Exception:  # pragma: no cover - lookup is defensive already
+                self.bot.logger.exception(
+                    "Web lookup failed for %s", contract["case_id"]
+                )
+                live = None
+            if live:
+                messages.append({"role": "system", "content": live})
         messages.extend(history[-config.CONTRACT_HISTORY_LIMIT:])
 
         try:
