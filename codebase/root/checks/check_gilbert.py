@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
-from gilbert.ai import GilbertAI, reply_text  # noqa: E402
+from gilbert.ai import GilbertAI, provider_hint, reply_text  # noqa: E402
 from gilbert import lookup  # noqa: E402
 from gilbert.prompt import (  # noqa: E402
     GILBERT_SYSTEM_PROMPT,
@@ -189,6 +189,17 @@ check("reply_text returns None on junk", reply_text({"error": "bad"}) is None)
 check("reply_text returns None on None", reply_text(None) is None)
 check("reply_text returns None on blank text",
       reply_text({"choices": [{"message": {"content": "   "}}]}) is None)
+
+# --- provider failure hints -------------------------------------------------
+check("402 hint points at credit", "credit" in provider_hint(402, ""))
+check("insufficient_credits body is recognised",
+      "credit" in provider_hint(500, '{"code":"insufficient_credits"}'))
+check("401 hint points at the key", "CHATBOT_API_KEY" in provider_hint(401, ""))
+check("404 hint points at the model", "CHATBOT_MODEL" in provider_hint(404, ""))
+check("429 hint mentions rate limits", "rate" in provider_hint(429, ""))
+check("empty-content hint names max_tokens",
+      "MAX_TOKENS" in provider_hint(500, '{"error": "empty response content"}'))
+check("unknown failures get no hint", provider_hint(500, "boom") == "")
 
 # --- per-instance overrides (the daily guide runs on its own model) ---------
 with patch.dict(os.environ, {

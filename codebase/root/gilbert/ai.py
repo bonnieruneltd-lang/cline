@@ -57,6 +57,31 @@ def _cfg(name: str, default: str = "") -> str:
     return default
 
 
+def provider_hint(status: int, body: str) -> str:
+    """A one-line diagnosis for the common provider failures.
+
+    Returns ``""`` when the response needs no explanation. The empty-content case
+    matters most: a reasoning model that spends its whole ``max_tokens`` budget
+    thinking returns ``200``/``500`` with no text at all, which looks like an
+    outage but is really "give it more room to answer".
+    """
+    text = (body or "").lower()
+    if status in (401, 403):
+        return "check CHATBOT_API_KEY"
+    if status == 402 or "insufficient_credits" in text:
+        return "the provider account is out of credit"
+    if status == 404 or "model not found" in text:
+        return "check CHATBOT_MODEL against the provider's model list"
+    if status == 429 or "rate limit" in text:
+        return "rate limited; retry later or slow the caller down"
+    if "empty response content" in text:
+        return (
+            "the model returned no text - reasoning models spend max_tokens "
+            "before they answer, so raise CHATBOT_MAX_TOKENS/DAILY_GUIDE_MAX_TOKENS"
+        )
+    return ""
+
+
 def reply_text(payload) -> str | None:
     """Pull the assistant text out of an OpenAI-compatible response.
 
@@ -170,12 +195,14 @@ class GilbertAI:
                 ) as resp:
                     if resp.status != 200:
                         body = (await resp.text())[:300]
+                        hint = provider_hint(resp.status, body)
                         logger.error(
-                            "Gilbert AI returned HTTP %s (model=%s, url=%s/chat/completions): %s",
+                            "Gilbert AI returned HTTP %s (model=%s, url=%s/chat/completions): %s%s",
                             resp.status,
                             self.model,
                             self.base_url,
                             body,
+                            f" [hint: {hint}]" if hint else "",
                         )
                         return None
                     data = await resp.json()

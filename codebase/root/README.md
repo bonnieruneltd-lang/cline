@@ -1216,6 +1216,50 @@ it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
 
+### 2026-11-06 — Personas and guide move to cline-pass models (uploaded; **restart required**)
+
+**Why.** The paid Cline key ran out of credit mid-session (`402
+insufficient_credits`, balance $0.0089), but the owner's **cline-pass**
+subscription covers a separate family. Measured all sixteen pass models on this
+bot's own prompts rather than guessing (one variable at a time, real system
+prompts, `temperature` as configured):
+
+| Model | Persona reply | Latency |
+|---|---|---|
+| `cline-pass/deepseek-v4.1-flash-1017` | 3,501 chars, correct cap/tranche/case ID | **8 s** |
+| `cline-pass/muse-spark-1.3-contributor` | 2,616 chars, tightest voice | 14 s |
+| `cline-pass/mimo-v2.6-pro` | 3,245 chars | 18 s |
+| `cline-pass/glm-5.3` | 2,916 chars | 27 s |
+| `cline-pass/deepseek-v4-pro` | 2,824 chars | 27 s |
+| `cline-pass/minimax-m3.1-flash` | 6,478 chars (too long for a thread) | 27 s |
+| `cline-pass/kimi-k3.1-pro` | 2,411 chars | 31 s |
+| `cline-pass/qwen3.8-max` | 6,782 chars (too long) | 32 s |
+
+Guide runs, same source and prompt: `deepseek-v4-pro` **23,779 chars / 48
+headings / 0 missing commands / 50 s** at 16k tokens, and `qwen3.8-max` 21,840
+chars / 0 missing at 32k tokens and 106 s. Both now state dues as 1.75%/2% and
+the quota as 1/3 — the RULES block holds.
+
+**Chosen.** `CHATBOT_MODEL=cline-pass/deepseek-v4.1-flash-1017` (flash tier for
+the path a player waits on: eight seconds, and its rule handling was correct on
+the first try) and `DAILY_GUIDE_MODEL=cline-pass/deepseek-v4-pro` (pro tier for
+the once-a-day document, where 50 seconds costs nobody anything and the longest,
+most complete guide came out). Both budgets are 16,000 tokens.
+
+**Trap found and guarded.** These are reasoning models: the answer arrives after
+the thinking, and `max_tokens` pays for both. At 2,000–4,000 tokens several of
+them returned `HTTP 500 {"error":"empty response content"}` with no text at all
+— which the handler would have shown as "my line to the records has gone down".
+`gilbert/ai.py` now has `provider_hint()`, so that body logs as
+`[hint: the model returned no text - reasoning models spend max_tokens before
+they answer, so raise CHATBOT_MAX_TOKENS/DAILY_GUIDE_MAX_TOKENS]`, alongside
+hints for 401/402/404/429. `check_gilbert.py` pins every branch.
+
+**Verified.** A live call through the real client with the real Gilbert prompt
+returned 1,195 characters in character, quoting the case ID and the 1.20.1/Forge
+build. Suite **21/21**, `compileall`/`pyflakes` clean, **114 commands / 16
+cogs** unchanged. **Restart required.**
+
 ### 2026-11-06 — Albert/Gilbert on a Cline model with live Minecraft lookups; longer, fuller guide (uploaded; **restart required**)
 
 **Change.**

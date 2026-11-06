@@ -115,6 +115,35 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 
 ### Last known live state
 
+2026-11-06 (**cline-pass models; restart required**). Working tree clean;
+**21/21**, `compileall`/`pyflakes` clean, surface pinned at **114 / 16** and
+unchanged. Live `.env`: `CHATBOT_API_URL=https://api.cline.bot/api/v1`,
+`CHATBOT_MODEL=cline-pass/deepseek-v4.1-flash-1017` (0.75, 16,000 tokens, 240 s),
+`DAILY_GUIDE_MODEL=cline-pass/deepseek-v4-pro` (0.25, 16,000), `TAVILY_API_KEY`
+set. Notes that matter:
+
+- **cline-pass models are reasoning models.** `max_tokens` pays for the thinking
+  *and* the answer, so a small budget returns HTTP 500
+  `{"error":"empty response content"}` with no text, and the persona falls back
+  to its "line to the records has gone down" line. Keep 16,000 for the personas
+  and the guide; `provider_hint()` in `gilbert/ai.py` names this cause in the log.
+- `cline-pass/deepseek-v4.1-pro` does **not** exist (404); the working alias is
+  `cline-pass/deepseek-v4-pro`.
+- Measured on this bot's prompts (see README section 12 for the table): the flash
+  tier answers a persona message in ~8 s, the max/pro tiers take 27–32 s and
+  write 2–3× longer replies, which just get chunked in the thread. `muse-spark-1.3-contributor`
+  (14 s) is the best alternative voice; `kimi-k3.1-pro` is the crispest.
+- `gilbert/ai.py`: `reply_text()` unwraps the gateway envelope
+  `{"data":{"choices":…}}`; anything reading a reply must go through it.
+- `gilbert/lookup.py`: Tavily lookup for Minecraft facts, keyword-triggered and
+  never fatal; the block is `PINNED SERVER BUILD` + `LIVE WEB RESULTS` and can
+  never override economy rules.
+- `config.MINECRAFT_VERSION` / `MINECRAFT_LOADER` / `MINECRAFT_PLATFORM_NOTE` are
+  the single source for "1.20.1 on Forge 47.x, not NeoForge".
+- The guide's material carries an **ECONOMY RULES** block
+  (`daily_sync.collect_rules()` / `collect_game_rules()`): a raw constant list was
+  once mis-read as "50% dues" and a "3-cycle" contract. State new rates there too.
+
 2026-11-06 (**Cline models for the personas + guide, live lookups; restart
 required**). Working tree is clean; **21/21**, `compileall`/`pyflakes` clean,
 surface pinned at **114 / 16** and unchanged (no new command). Uploaded this
@@ -134,6 +163,9 @@ session, **not yet loaded** — the process needs a panel restart:
 - The guide runs on `DAILY_GUIDE_MODEL` / `DAILY_GUIDE_TEMPERATURE` /
   `DAILY_GUIDE_MAX_TOKENS`, separate from the personas, and its prompt asks for a
   nine-section document with worked examples and an FAQ.
+
+The paid-key note below is history: the personas now run on the cline-pass
+subscription, so the `402 insufficient_credits` blocker no longer applies.
 
 Live `.env` (backed up as `.env.bak-20261106-*`): `CHATBOT_API_URL=https://api.cline.bot/api/v1`,
 `CHATBOT_MODEL=reflection/beam-1.0-501b-a23b`, 0.75 / 16,000 tokens / 240 s;
