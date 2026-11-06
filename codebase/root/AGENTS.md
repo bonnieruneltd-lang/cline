@@ -168,11 +168,13 @@ pruning is an owner decision (known gap).
 
 **Open operational item:** the 21:09:15 startup guide run wrote
 `fallback_guide()` (6,131 characters) because the model call exceeded the **240 s**
-`CHATBOT_TIMEOUT` on `cline-pass/deepseek-v4-pro`; a manual call with the same
-settings and a longer timeout reproduced the slowness. The guide code is correct
-(trimming and the 3,600-word budget are pinned), so this is provider latency: the
-next run retries, and if it persists raise `CHATBOT_TIMEOUT` for the guide or use
-the flash tier for `DAILY_GUIDE_MODEL`. A fallback guide is valid, just terse.
+`CHATBOT_TIMEOUT` on `cline-pass/deepseek-v4-pro`. A 900 s call then produced
+24,665 characters in ~7 minutes; trimmed by `trim_guide(…, 24000)` to **23,832**
+(FAQ present, balanced markup, `GUIDE_TRIM_NOTE` at the end) and uploaded at
+21:17, so **the live guide is a full AI-written document again**. The guide code
+is correct — this is provider latency, so the automatic run may fall back until
+the owner raises the guide's timeout or uses the flash tier. A fallback guide is
+valid, just terse.
 
 Live data re-audited at close (db + `-wal` + `-shm` pulled together):
 `integrity_check` `ok`, `foreign_key_check` empty, all **681** ledger rows replay

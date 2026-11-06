@@ -1350,10 +1350,14 @@ not automatic; the Turso append-only erasure question; the Forge mod; and no
 **240 s** client timeout on `cline-pass/deepseek-v4-pro` and wrote
 `fallback_guide()` (6,131 characters) instead of a full document; a manual call
 with the same settings reproduced the timeout, so it is provider latency, not the
-trim change (`trim_guide()` and the 3,600-word budget are pinned by
-`check_daily_sync.py`). The 06:00 UTC run retries; if it keeps timing out, raise
-`CHATBOT_TIMEOUT` for the guide or move `DAILY_GUIDE_MODEL` to the flash tier. The
-fallback is always a valid, if terse, guide — never a broken file.
+trim change. A longer-timeout run (900 s) then produced **24,665 characters in
+about 7 minutes**; run through the real `trim_guide(…, 24000)` path it becomes
+**23,832 characters** (FAQ present, balanced markup, ending with
+`GUIDE_TRIM_NOTE`) and was uploaded at 21:17 — **the live guide is a full
+AI-written document again**. Because generation can exceed `CHATBOT_TIMEOUT`, the
+next automatic run may fall back to the terse version until the owner raises the
+guide's timeout (or moves `DAILY_GUIDE_MODEL` to the flash tier). A fallback is
+always a valid, if terse, guide — never a broken file.
 
 ### 2026-11-06 — Capacity: twenty-plus contracts at once, measured (**live after the 21:05 restart**)
 
