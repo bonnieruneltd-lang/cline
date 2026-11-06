@@ -600,6 +600,7 @@ async def main():
             self.sent = []
             self.archived = False
             self.locked = False
+            self.invitable = False
             self.added = []
 
         def typing(self):
@@ -618,6 +619,8 @@ async def main():
                 self.archived = bool(kwargs["archived"])
             if "locked" in kwargs:
                 self.locked = bool(kwargs["locked"])
+            if "invitable" in kwargs:
+                self.invitable = bool(kwargs["invitable"])
 
         async def fetch_member(self, user_id):
             """Discord's thread-membership probe: absent means NotFound."""
@@ -765,6 +768,8 @@ async def main():
     invite = InviteInteraction(guild, leader, channel_id=space_a.id)
     await Contract.invite.callback(cog, invite, helper)
     check("the requester can invite a helper", helper.id in space_a.members, space_a.members)
+    check("an older ticket is made invitable for next time",
+          space_a.invitable is True, space_a.invitable)
     check("the invite is confirmed",
           bool(invite.response.sent)
           and invite.response.sent[-1].title.endswith("Member Added"),

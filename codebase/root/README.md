@@ -1240,7 +1240,8 @@ Union Admin role added to it. Three things matter:
 
 * **Helpers can join.** Threads are created `invitable`, so the party can use
   Discord's own *Add members*; `/contract invite member:<@user>` does the same
-  from inside the bot (and reopens an archived/locked ticket first). The
+  from inside the bot (reopening an archived/locked ticket first and flipping
+  `invitable` on tickets opened before this change, so the UI works there too). The
   requester or a Union Admin may invite; a finished ticket (`rejected`,
   `cancelled`, `completed`, `closed`) takes nobody. On the text-channel fallback
   the invite writes a member overwrite instead of thread membership.
@@ -1309,8 +1310,9 @@ added would have been ignored by Gilbert/Albert anyway.
 
 **Fix.** Threads are created `invitable=True` (Discord's own *Add members*
 works), `/contract invite member:@user` adds someone from the bot (reopening an
-archived/locked ticket first, or writing a member overwrite on the
-text-channel fallback), and `_may_participate()` now decides who the persona
+archived/locked ticket first, flipping `invitable` on older tickets, or writing a
+member overwrite on the text-channel fallback), and `_may_participate()` now
+decides who the persona
 answers: the requester, Union Admins, and anyone actually in the space. For
 threads that is `Thread.fetch_member()` — **not** `Thread.permissions_for()`,
 which resolves the *parent* channel and would have said yes to every member who

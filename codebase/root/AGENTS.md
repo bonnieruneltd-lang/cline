@@ -772,7 +772,8 @@ from the hosting panel before any of this takes effect.
 - **The negotiation space is shared with helpers, by design.** Threads are
   created `invitable=True` and `/contract invite` adds a member (thread
   membership, or an overwrite on the text-channel fallback), reopening an
-  archived/locked ticket first. `Contract._may_participate()` decides who the
+  archived/locked ticket first and flipping `invitable` on threads opened before
+  the change. `Contract._may_participate()` decides who the
   persona answers: the requester, Union Admins, and anyone actually in the space.
   For a thread use `Thread.fetch_member()` — **never**
   `Thread.permissions_for()`, which resolves the *parent* channel and would

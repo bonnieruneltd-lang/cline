@@ -1042,16 +1042,23 @@ class Contract(commands.Cog):
         if callable(add_user):
             try:
                 await add_user(member)
-                return True
             except discord.HTTPException:
                 # An archived or locked ticket refuses new members until it is
                 # reopened, so the invite reopens it rather than failing.
                 try:
                     await channel.edit(archived=False, locked=False, reason=reason)
                     await add_user(member)
-                    return True
                 except discord.HTTPException:
                     return False
+            # Threads opened before this change are not invitable, so Discord's
+            # own "Add members" would still be closed to the party. Flip it once
+            # the requester has shown they may invite.
+            if getattr(channel, "invitable", True) is False:
+                try:
+                    await channel.edit(invitable=True, reason=reason)
+                except discord.HTTPException:  # pragma: no cover - best effort
+                    pass
+            return True
         set_permissions = getattr(channel, "set_permissions", None)
         if callable(set_permissions):
             try:
