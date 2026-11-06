@@ -1,5 +1,11 @@
 # The Royal Court — Discord bot + Minecraft Forge companion
 
+> **Start here:** this file is the complete, reference version of the project
+> documentation. If you want a condensed, scannable read-first summary (what the
+> bot does, the economy rules that must not be broken, the command surface,
+> deployment checklist, known gaps and money paths), read **`README-optimized.md`**
+> first — it is the same rules in a fraction of the length (~110 lines vs 3,182).
+
 This repository is the **Royal Bank / Royal Court** bot for the Minecraft server
 **The Realm of Rune**, plus the placeholder for the **Forge mod** that will
 redeem shop orders and contract keys inside Minecraft.

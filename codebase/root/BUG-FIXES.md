@@ -1,5 +1,11 @@
 # Bug fixes — catalogue
 
+> **Start here:** this file is the complete, reference version of every defect
+> found in the project. If you want a condensed, scannable read-first summary
+> (how to use it, the defects already fixed and covered by checks, and the
+> known remaining deliberate issues), read **`BUG-FIXES-optimized.md`** first —
+> it is the same rules in a fraction of the length (~120 lines vs 1,742).
+
 A running record of every defect found in this project, area by area. Each entry
 says what went wrong, why it mattered, and what the fix was. Newest first.
 
