@@ -782,6 +782,13 @@ from the hosting panel before any of this takes effect.
   but cannot move credits. Conversational concurrency is per channel
   (`Contract._locks`) with per-contract history, so several negotiations run at
   once; do not replace that with one global lock.
+- **Bursts are expected.** 25 simultaneous `/faction contract` calls must still
+  produce unique case IDs (the counter is inside the insert transaction) and one
+  thread each. `_thread_add_user()` waits out `RateLimited.retry_after` (capped
+  5 s) and retries once; `_add_union_admins()` logs the member IDs it could not
+  add instead of swallowing them. `checks/check_contracts.py` pins the 25-request
+  burst, the 20-conversation burst, the channel fallback on a 429 and the clean
+  refusal when both routes are limited.
 
 ## Individual wallets and `/daily`
 

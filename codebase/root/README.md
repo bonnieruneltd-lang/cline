@@ -1258,6 +1258,15 @@ Union Admin role added to it. Three things matter:
   are serialised (a burst in one ticket still gets one coherent reply per
   message). History is stored per contract (`contracts.history`), and every AI
   call opens its own HTTP session, so nothing leaks between conversations.
+* **Capacity.** Twenty-five simultaneous `/faction contract` calls open 25 cases
+  with 25 unique IDs and one thread each; twenty threads can talk at once (the
+  model is entered per conversation, not per process). The cost is Discord's side:
+  each case is a thread creation plus one `add_user` per participant. A refused
+  thread falls back to a private channel ticket; if that is refused too, the
+  command answers **Ticket Failed** and writes nothing, so a burst never leaves a
+  half-made case. `_thread_add_user()` honours `retry_after` once, and an admin it
+  cannot add is logged by name rather than skipped silently. The per-cycle quota
+  (nation 1, kingdom 3) still limits a realistic burst.
 
 ---
 
@@ -1287,6 +1296,42 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-06 — Capacity: twenty-plus contracts at once, measured (**uploaded; restart pending**)
+
+**What was asked.** Whether the bot can handle more than 20 people opening
+contracts at the same time.
+
+**Measured, not assumed.** A harness drove **25 concurrent** `request_contract`
+calls (25 nations, 25 leaders) against a throwaway database: **25 opened, 25
+unique case IDs (`UN-…-001`…`025`), one thread each, 0 exceptions**, and **20
+contract threads talking at the same time answered with a peak of 20 AI calls in
+flight**, one reply per thread and each history holding only its own turn. The
+database serialises writes and `next_case_number()` allocates inside the insert
+transaction, which is why the burst cannot duplicate a case ID or lose a row.
+
+**Where it actually costs.** Each contract is one private thread plus one
+`add_user` per participant (requester + up to 50 Union Admins), so 20 contracts is
+~100 Discord calls in a burst; the model is entered once per opening turn. When
+Discord refuses a thread creation the code falls back to a private channel ticket
+and records that channel as the ticket; when the channel route is limited too,
+the request answers **Ticket Failed** with **no contract row** (all three paths
+verified). Quota still caps the realistic burst at one contract per nation and
+three per kingdom per cycle.
+
+**Fix.** `Contract._thread_add_user()` now waits out `RateLimited.retry_after`
+(capped at 5 s) and retries once, so a busy evening does not silently drop
+participants, and `_add_union_admins()` **logs a warning** naming the case and the
+member IDs it could not add instead of swallowing the failure. Previously a
+rate-limited admin was invisible.
+
+**Verified.** `checks/check_contracts.py` pins 25 concurrent requests (unique
+cases, one thread each), 20 concurrent conversations (peak 20, no cross-talk),
+the channel fallback on a 429, the clean refusal when both routes are limited,
+and the logged admin failure. `checks/run_all.py` **22/22**,
+`compileall`/`pyflakes` clean.
+
+**Deployed** with `.bak-<stamp>` backups and SHA-256 checks; **restart pending**.
 
 ### 2026-11-06 — Contract discussions take helpers, and several talk at once (**uploaded; restart pending**)
 

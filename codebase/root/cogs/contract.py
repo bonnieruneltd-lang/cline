@@ -435,11 +435,44 @@ class Contract(commands.Cog):
         role = guild.get_role(role_id)
         if role is None:
             return
+        missing: list[int] = []
         for member in list(role.members)[:50]:
-            try:
-                await thread.add_user(member)
-            except discord.HTTPException:
-                pass
+            if not await self._thread_add_user(thread, member):
+                missing.append(int(member.id))
+        if missing:
+            # A burst of tickets can be rate-limited member by member; a silent
+            # skip would leave an admin unable to see a case they must manage.
+            self.bot.logger.warning(
+                "Could not add %d Union Admin(s) to %s: %s",
+                len(missing),
+                getattr(thread, "name", "contract thread"),
+                missing,
+            )
+
+    async def _thread_add_user(self, thread: discord.Thread, member) -> bool:
+        """Add one member to a thread, honouring a rate limit once.
+
+        ``discord.py`` queues most calls itself, but a per-route limit on a
+        burst of `/faction contract` tickets can still surface a 429. Waiting
+        ``retry_after`` (capped, so a request is never held for minutes) and
+        trying once more keeps a busy evening from losing participants.
+        """
+        add_user = getattr(thread, "add_user", None)
+        if not callable(add_user):
+            return False
+        try:
+            await add_user(member)
+            return True
+        except discord.RateLimited as exc:
+            delay = min(max(float(getattr(exc, "retry_after", 1.0)), 0.0), 5.0)
+            await asyncio.sleep(delay)
+        except discord.HTTPException:
+            return False
+        try:
+            await add_user(member)
+            return True
+        except discord.HTTPException:
+            return False
 
     # ------------------------------------------------------------------
     # Gilbert generation
@@ -1038,17 +1071,15 @@ class Contract(commands.Cog):
         reason = f"Added to {contract['case_id']}"
         # Duck-typed on purpose: a thread has ``add_user`` *and* inherits
         # ``set_permissions``, so the thread path has to be tried first.
-        add_user = getattr(channel, "add_user", None)
-        if callable(add_user):
-            try:
-                await add_user(member)
-            except discord.HTTPException:
+        if callable(getattr(channel, "add_user", None)):
+            if not await self._thread_add_user(channel, member):
                 # An archived or locked ticket refuses new members until it is
                 # reopened, so the invite reopens it rather than failing.
                 try:
                     await channel.edit(archived=False, locked=False, reason=reason)
-                    await add_user(member)
                 except discord.HTTPException:
+                    return False
+                if not await self._thread_add_user(channel, member):
                     return False
             # Threads opened before this change are not invitable, so Discord's
             # own "Add members" would still be closed to the party. Flip it once

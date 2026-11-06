@@ -841,6 +841,255 @@ async def main():
           request_guild.parent.last_kwargs.get("invitable") is True,
           request_guild.parent.last_kwargs)
 
+    # --- capacity: more than twenty parties at once -------------------------
+    # "Can it handle 20+ at the same time?" is answered here: the database
+    # serialises writes and the case counter is transactional, so a burst must
+    # still produce unique case IDs, one thread each and no lost rows.
+    class BurstParent:
+        def __init__(self, guild):
+            self.guild = guild
+            self.id = 777
+            self.category = None
+            self.created = 0
+
+        async def create_thread(self, name, **kwargs):
+            await asyncio.sleep(0.002)
+            self.created += 1
+            thread = FakeThread(name, self.guild)
+            self.guild.threads.append(thread)
+            return thread
+
+    class BurstGuild:
+        id = 5
+
+        def __init__(self):
+            self.default_role = None
+            self.me = None
+            self.parent = BurstParent(self)
+            self.threads = []
+            self.channels = []
+            self.created = self.threads
+
+        def get_channel(self, channel_id):
+            return self.parent
+
+        def get_role(self, role_id):
+            return None
+
+        def get_member(self, member_id):
+            return None
+
+    await db.set_contract_channel(5, 777)
+    burst_guild = BurstGuild()
+    burst_cog = object.__new__(Contract)
+    logs = []
+    burst_cog.bot = SimpleNamespace(
+        db=db,
+        logger=SimpleNamespace(
+            exception=lambda *a, **k: logs.append(("exception", a)),
+            warning=lambda *a, **k: logs.append(("warning", a)),
+            info=lambda *a, **k: None,
+        ),
+    )
+    burst_cog._thread_ids = set()
+    burst_cog._locks = {}
+    burst_cog.ai = EchoAI()
+
+    BURST = 25
+    burst_nations = []
+    for i in range(BURST):
+        nation_id = await db.create_nation(5, f"Burst {i:02d}", 500 + i)
+        await db.add_balance("nations", nation_id, 50_000)
+        burst_nations.append(nation_id)
+    burst_interactions = [FakeRequestInteraction(burst_guild, 500 + i) for i in range(BURST)]
+    burst_results = await asyncio.gather(*[
+        burst_cog.request_contract(
+            burst_interactions[i], f"nation:Burst {i:02d}", f"Project {i}", 1_000
+        )
+        for i in range(BURST)
+    ], return_exceptions=True)
+    burst_errors = [r for r in burst_results if isinstance(r, Exception)]
+    burst_rows = await db.fetchall(
+        "SELECT case_id, thread_id FROM contracts WHERE guild_id = 5 AND requester_id >= 500"
+    )
+    burst_cases = [row["case_id"] for row in burst_rows]
+    check("25 simultaneous requests all open", sum(1 for r in burst_results if r is True) == BURST,
+          [type(e).__name__ for e in burst_errors[:3]])
+    check("25 simultaneous requests raise nothing", not burst_errors,
+          [type(e).__name__ for e in burst_errors[:3]])
+    check("every burst case ID is unique", len(set(burst_cases)) == BURST, len(set(burst_cases)))
+    check("every burst contract has its own thread",
+          len(burst_rows) == BURST and all(row["thread_id"] for row in burst_rows),
+          len(burst_rows))
+    check("the burst opened one thread per case", burst_guild.parent.created == BURST,
+          burst_guild.parent.created)
+    check("no burst row was lost to a case-number race",
+          len({row["thread_id"] for row in burst_rows}) == BURST,
+          len({row["thread_id"] for row in burst_rows}))
+
+    # Twenty negotiations talking at the same time: one lock per thread, so the
+    # AI is entered concurrently, and no history leaks across cases.
+    talk_ai = EchoAI(delay=0.03)
+    burst_cog.ai = talk_ai
+    talk_spaces = []
+    for i in range(20):
+        space = SpaceThread(9100 + i, burst_guild)
+        space.members.add(600 + i)
+        contract_id = await db.create_contract(
+            guild_id=5, case_id=f"UN-TALK-{i:03d}", nation_id=burst_nations[i],
+            nation_name=f"Burst {i:02d}", nation_tag="TALK", requester_id=600 + i,
+            cycle=1, budget=1_000, proposal="bridge", owner_type="nation",
+            owner_id=burst_nations[i],
+        )
+        await db.set_contract_thread(contract_id, space.id)
+        burst_cog._thread_ids.add(space.id)
+        talk_spaces.append(space)
+    await asyncio.gather(*[
+        burst_cog.on_message(SimpleNamespace(
+            author=Person(600 + i, f"Speaker {i}"), guild=burst_guild,
+            content=f"turn[{i}]", channel=talk_spaces[i], id=i, bot=False,
+        ))
+        for i in range(20)
+    ])
+    talk_rows = await db.fetchall(
+        "SELECT case_id, history FROM contracts WHERE case_id LIKE 'UN-TALK-%' ORDER BY case_id"
+    )
+    foreign = [
+        row["case_id"] for row in talk_rows
+        if sum(f"turn[{i}]" in (row["history"] or "") for i in range(20)) > 1
+    ]
+    check("twenty negotiations are answered at once", talk_ai.peak == 20, talk_ai.peak)
+    check("every one of the twenty gets a reply",
+          all(len(space.sent) == 1 for space in talk_spaces),
+          [len(space.sent) for space in talk_spaces])
+    check("no turn leaks into another negotiation",
+          not foreign and len(talk_rows) == 20, foreign[:3])
+
+    # Discord rate limits: a refused thread falls back to a channel ticket, and
+    # when both routes are limited the request fails cleanly with no row.
+    class LimitedParent:
+        def __init__(self, guild):
+            self.guild = guild
+            self.id = 777
+            self.category = None
+
+        async def create_thread(self, name, **kwargs):
+            raise discord.HTTPException(
+                SimpleNamespace(status=429, reason="Too Many Requests"), "rate limited"
+            )
+
+    class LimitedGuild:
+        def __init__(self, guild_id, channel_ok):
+            self.id = guild_id
+            self.default_role = None
+            self.me = None
+            self.parent = LimitedParent(self)
+            self.channel_ok = channel_ok
+            self.channels = []
+
+        def get_channel(self, channel_id):
+            return self.parent
+
+        def get_role(self, role_id):
+            return None
+
+        def get_member(self, member_id):
+            return None
+
+        async def create_text_channel(self, name, **kwargs):
+            if not self.channel_ok:
+                raise discord.HTTPException(
+                    SimpleNamespace(status=429, reason="Too Many Requests"), "rate limited"
+                )
+            channel = SpaceChannel(8300 + len(self.channels), self)
+            self.channels.append(channel)
+            return channel
+
+    class BurstInteraction:
+        def __init__(self, guild, user):
+            self.guild = guild
+            self.guild_id = guild.id
+            self.user = user
+            self.response = FakeResp()
+            self.followup = FakeResp()
+
+    async def limited_run(guild_id, channel_ok, count=3):
+        await db.set_contract_channel(guild_id, 777)
+        guild = LimitedGuild(guild_id, channel_ok)
+        cog2 = object.__new__(Contract)
+        cog2.bot = SimpleNamespace(
+            db=db, logger=SimpleNamespace(
+                exception=lambda *a, **k: None, warning=lambda *a, **k: None,
+                info=lambda *a, **k: None,
+            )
+        )
+        cog2._thread_ids = set()
+        cog2._locks = {}
+        cog2.ai = EchoAI()
+        interactions = []
+        for i in range(count):
+            nation_id = await db.create_nation(guild_id, f"Limit {i:02d}", 700 + i)
+            await db.add_balance("nations", nation_id, 50_000)
+            interactions.append(BurstInteraction(guild, Person(700 + i, f"Speaker {i}")))
+        results = await asyncio.gather(*[
+            cog2.request_contract(interactions[i], f"nation:Limit {i:02d}", "A bridge", 1_000)
+            for i in range(count)
+        ], return_exceptions=True)
+        rows = await db.fetchall(
+            "SELECT thread_id FROM contracts WHERE guild_id = ? AND requester_id >= 700",
+            (guild_id,),
+        )
+        failures = sum(
+            "Ticket Failed" in (embed.title or "")
+            for interaction in interactions for embed in interaction.followup.sent
+            if getattr(embed, "title", None)
+        )
+        return results, rows, guild, failures
+
+    results, rows, guild6, failures = await limited_run(6, channel_ok=True)
+    check("a rate-limited thread falls back to a channel ticket",
+          sum(1 for r in results if r is True) == 3 and len(rows) == 3
+          and len(guild6.channels) == 3 and failures == 0,
+          (sum(1 for r in results if r is True), len(rows), len(guild6.channels), failures))
+    check("the fallback records the channel as the ticket",
+          all(row["thread_id"] in {c.id for c in guild6.channels} for row in rows),
+          [row["thread_id"] for row in rows])
+
+    results, rows, guild7, failures = await limited_run(7, channel_ok=False)
+    check("a doubly rate-limited request fails cleanly",
+          sum(1 for r in results if r is True) == 0 and rows == [] and failures == 3,
+          (sum(1 for r in results if r is True), len(rows), failures))
+
+    # A Union Admin that cannot be added is reported, never silently skipped.
+    class FailingThread:
+        name = "union-contract-failing"
+
+        async def add_user(self, member):
+            raise discord.HTTPException(
+                SimpleNamespace(status=403, reason="Forbidden"), "forbidden"
+            )
+
+    class AdminRole:
+        def __init__(self, members):
+            self.members = members
+
+    class AdminGuild:
+        def get_role(self, role_id):
+            return AdminRole([Person(800, "Admin A"), Person(801, "Admin B")])
+
+    warnings = []
+    burst_cog.bot = SimpleNamespace(
+        db=db,
+        logger=SimpleNamespace(
+            exception=lambda *a, **k: None,
+            warning=lambda *a, **k: warnings.append(a),
+            info=lambda *a, **k: None,
+        ),
+    )
+    await burst_cog._add_union_admins(FailingThread(), AdminGuild(), {"union_admin_role_id": 9})
+    check("a failed Union Admin add is logged, not swallowed",
+          bool(warnings) and "Union Admin" in str(warnings[0]), warnings[:1])
+
     await db.close()
     print("\nFAILURES:", len(fails))
     for failure in fails:
