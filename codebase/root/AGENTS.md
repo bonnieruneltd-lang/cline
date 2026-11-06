@@ -115,9 +115,14 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 
 ### Last known live state
 
-2026-11-06 (**cline-pass models; restart required**). Working tree clean;
-**21/21**, `compileall`/`pyflakes` clean, surface pinned at **114 / 16** and
-unchanged. Live `.env`: `CHATBOT_API_URL=https://api.cline.bot/api/v1`,
+2026-11-06 (**live on cline-pass; deployed and running**). Working tree clean;
+**21/21**, `compileall`/`pyflakes` clean, surface **114 commands / 16 cogs**.
+The process restarted at **19:13 UTC**, so everything below is *running*, not
+pending: `daily_guide.md` regenerated at 19:15 with **24,502 characters**, all
+nine sections, dues stated as 1.75%/2%, quota as 1/3, and no "50% dues" — proof
+that the gateway, key, overrides and RULES block all work.
+
+Live `.env`: `CHATBOT_API_URL=https://api.cline.bot/api/v1`,
 `CHATBOT_MODEL=cline-pass/deepseek-v4.1-flash-1017` (0.75, 16,000 tokens, 240 s),
 `DAILY_GUIDE_MODEL=cline-pass/deepseek-v4-pro` (0.25, 16,000), `TAVILY_API_KEY`
 set. Notes that matter:

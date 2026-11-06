@@ -1250,29 +1250,39 @@ it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
 
-### 2026-11-06 — Session close-out: AI on cline-pass, live lookups, fuller guide (**uploaded; restart pending**)
+### 2026-11-06 — Session close-out: AI on cline-pass, live lookups, fuller guide (**deployed and live**)
 
-**State at close.** Working tree clean at `6d53d74` and pushed; live tree
+**State at close.** Working tree clean at `b45792a` and pushed; live tree
 byte-identical to it (85 project files, `.env` included); `checks/run_all.py`
 **21/21**, `compileall`/`pyflakes` clean; surface unchanged at **114 commands /
 16 cogs**. Everything from this session is uploaded with
-`.bak-20261106-174527` / `-174607` / `-180245` backups and SHA-256 verified.
+`.bak-20261106-174527` / `-174607` / `-180245` / `-191528` backups and SHA-256
+verified.
 
-**What is waiting on the restart.** The process loaded its config and code at
-15:12 UTC, so until the panel restarts it, live Gilbert/Albert still answer on
-DeepSeek `deepseek-flash` and none of this session's code is running.
+**The restart happened at ~19:13 UTC and this build is live.** Evidence from the
+host: the live database was reopened at **19:13:44**, `turso-tmp/last_sync.json`
+was rewritten at **19:14:33**, and `daily_guide.md` was regenerated at
+**19:15:48** — **24,502 characters** (was 4,428 before this session). That
+regeneration ran through the new `DAILY_GUIDE_MODEL=cline-pass/deepseek-v4-pro`
+on the new nine-section prompt, so the Cline gateway, the key, the overrides and
+the RULES block are all proven live.
 
-**After the restart, check these four things.**
-1. `/faction contract` → Gilbert answers *in the Cline model* and, when the
-   message mentions game mechanics, the log shows one Tavily lookup. A reply that
-   says "my line to the records has gone down" is a provider failure: the log now
-   carries a `[hint: …]` naming the cause.
-2. The daily guide (run-on-start writes `daily_guide.md`): expect ~20k+
-   characters, nine sections, an FAQ, and Union dues stated as **1.75%/2%** — not
-   50%.
-3. `daily_guide.md` mtime and `turso-tmp/last_sync.json` should both refresh.
-4. `/payout cash` still reports the 5% individual tax and Union dues; no money
-   code changed this session.
+**The generated guide checks out.** 503 lines, all nine sections, an FAQ, and the
+facts that used to be wrong are now right: "*Rate: nation 1.75%, kingdom 2%*",
+the quota as "*1 per nation, 3 per kingdom*", a worked 25%/75% example
+(12,500 / 37,500 on a 50,000 contract), and the FAQ explicitly separating member
+dues from the 5% net-worth tax that every wallet pays. No "50% dues" anywhere.
+
+**One thing I could not exercise end to end:** a live `/faction contract`
+exchange needs an admin to open a contract in Discord. The persona model itself
+was verified against the gateway directly (8 s, in character, correct leverage
+cap/tranche/case ID) and both jobs share the same client, key and endpoint that
+the guide just used successfully.
+
+**If a persona ever answers "my line to the records has gone down",** read the
+log line: `provider_hint()` now appends `[hint: …]` naming the cause — out of
+credit, wrong model id, rate limited, or (most likely here) a `max_tokens`
+budget too small for a reasoning model to finish thinking *and* answer.
 
 **Deliberately left alone.** The Forge mod is still a README only, and
 `POST /api/preview` still does not exist (README section 9, items 1 and 10). The
