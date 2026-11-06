@@ -341,7 +341,12 @@ next scheduled hour. `DAILY_TASK_RUN_ON_START`, `TURSO_RUN_ON_START` and
    `DAILY_GUIDE_CHANNEL_ID` (if set), written to
    `DAILY_GUIDE_PATH` (if set) and stored in the `daily_guides` table in the
    mirror. `DAILY_GUIDE_SOURCE_CHARS` caps the source and
-   `DAILY_GUIDE_MAX_CHARS` the output. If the model is unavailable a
+   `DAILY_GUIDE_MAX_CHARS` the output; an over-long answer is trimmed with
+   `daily_sync.trim_guide()` at the last paragraph/line/sentence/word boundary,
+   never mid-word or inside an open code span, and ends with `GUIDE_TRIM_NOTE` so
+   the reader knows it was shortened. The prompt's word budget is 90% of that cap
+   (`GUIDE_WORD_HEADROOM`), which normally keeps the whole document inside the
+   limit. If the model is unavailable a
    deterministic fallback built from the same material is used, so a guide is
    always produced.
 
@@ -1256,6 +1261,81 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-06 — Full-file audit ("check all the files") and the guide-trim fix (**uploaded; restart pending**)
+
+**What was asked.** "Check all the files." This pass re-audited rather than
+changed, and found one real defect — in the generated guide, not the economy.
+
+**The code matched the host.** All **89** project files (every `.py`,
+`checks/`, `shop/`, `gilbert/`, `cogs/`, the docs, `Procfile`,
+`requirements.txt`, `.gitignore`) are byte-identical to this checkout; no file
+was missing on either side. Host-only content remains `.env`, the generated
+`daily_guide.md` and `turso-tmp/last_sync.json`.
+
+**Both copies are green.** `checks/run_all.py` **22/22**, `compileall` and
+`pyflakes` clean on this checkout **and** on the deployed tree pulled back into
+an empty directory (`/workspace/audit-live`, 90 files including the generated
+guide), so the result does not depend on the working copy.
+
+**The live data reconciles.** `royal_bank.db`, `-wal` and `-shm` were pulled
+together (692,224 / 1,322,552 / 32,768 bytes). `PRAGMA integrity_check` = `ok`,
+`foreign_key_check` empty, 33 tables, **681** ledger rows (`id` 1–685; the four
+gaps are the known deleted-member rows). All **625** money rows replayed in `id`
+order: every `balance_after` equals the previous balance plus the amount
+(**0 chain mismatches**), and the closing sum equals the stored balance for all
+**25** accounts — 12 nations, 3 kingdoms, 6 wallets, Union 27,649,541, Crown
+60,000,000, Casino 100,020,881,876, Fishing Guild 998,891. The only ledger key
+with no live row is `('nation', 5)`, the documented `/nation delete` burn.
+
+**The live app is on this build.** `GET /applications/@me` answers for
+*Ecobert Of Rune* (1557900654335230072) and the guild command tree is **114
+nodes** (23 top-level) — exactly the surface `checks/check_cogs.py` pins.
+`royal_bank.db` was reopened at 19:13:44, the mirror checkpoint written at
+19:14:33 (32 tables, 1,152 rows) and the guide at 19:15:48, so the process is
+alive on the build these docs describe.
+
+**The two live integrations answer.** The live Tavily key returned results for a
+Minecraft 1.20.1 query (HTTP 200), and the `CHATBOT_*` gateway
+(`https://api.cline.bot/api/v1`, `cline-pass/deepseek-v4.1-flash-1017`) answered a
+structured completion, so the guide and both negotiators have working backends.
+
+**The one defect: the guide was cut off mid-word.** `daily_guide.md` was 24,001
+characters and ended inside the last FAQ answer, at "or /fishing" — cut in the
+middle of the word `/fishingguild` and with the inline code span still open.
+`generate_guide()` did
+`guide[: self.guide_max_chars]`, a hard slice at an arbitrary index, and
+`DAILY_GUIDE_MAX_CHARS=24000` was smaller than what the prompt's own 4,000-word
+budget produces once Markdown overhead is counted, so the cut fired on every
+run. The same truncated text was written to the file and the `daily_guides`
+mirror row.
+
+**Fix.** `daily_sync.trim_guide()` (with `_cut_at_boundary()` and
+`_drop_open_markup()`) trims at the last paragraph, line, sentence or word
+boundary instead — never inside a word — removes a code fence or inline span the
+cut left open, and appends `GUIDE_TRIM_NOTE` so the document says it was
+shortened. The prompt's word target is now derived with `GUIDE_WORD_HEADROOM`
+(90% of the character cap: **3,600** words at 24,000 characters) so a compliant
+answer fits without any trim at all. Re-running the fix over the live guide's
+text gives 23,758 characters that end on a complete paragraph, with balanced
+backticks and the note.
+
+**Verified.** `checks/check_daily_sync.py` pins the new contract: a guide inside
+the cap is untouched, a long one is trimmed within the cap at a whole line, open
+inline spans and fences are dropped, the survivors stay balanced, and a
+degenerate cap still wins. `checks/run_all.py` **22/22**, `compileall` and
+`pyflakes` clean.
+
+**Uploaded.** `daily_sync.py`, `checks/check_daily_sync.py`, `README.md`,
+`BUG-FIXES.md`, `BUG-FIXES-optimized.md` and a repaired `daily_guide.md`, each
+with a `.bak-<stamp>` backup and a SHA-256 compared against the host after the
+write. **A restart is required** for the `daily_sync.py` change: the guide is
+generated in-process, so the live bot keeps the old slicer until the panel
+restarts it (the next 06:00 UTC run, or a manual one, then writes the complete
+guide).
+
+**Left alone deliberately.** No economy number, schema, command or `.env` value
+was touched: the audit found one defect and fixed that one.
 
 ### 2026-11-06 — Second full audit ("check all the files"); the optimized guides go live (**uploaded; no restart needed**)
 

@@ -26,6 +26,48 @@ Test:    the check that proves it (see "Verification" at the end).
 
 ---
 
+## The daily guide was cut off mid-word — 2026-11-06
+
+### A 24,000-character guide ended in the middle of `/fishingguild`, inside an open code span
+
+**Symptom.** `daily_guide.md` on the host was 24,502 bytes and its last line read
+"... Admins can refill these accounts with `/casino fund` or `/fishing" — the
+final FAQ answer stopped mid-command, and the inline code span was never closed,
+so the Markdown tail rendered wrong. The same truncated text is what the
+`daily_guides` mirror row stored, so the "complete guide" was not complete.
+
+**Cause.** `DailySync.generate_guide()` ended with a hard slice,
+`return guide[: self.guide_max_chars]`, and the prompt sized the answer at
+`max_chars // CHARS_PER_WORD` words — 4,000 words at the 24,000-character cap.
+Markdown headings, bullets and blank lines are not words, so a model that obeys
+the word budget still lands past the character cap, and the slice fired on every
+run: it cut at an arbitrary index (mid-word) with no regard for the markup it
+split and no indication that anything was missing.
+
+**Impact.** Cosmetic but user-facing: the guide is the document players are told
+to read, it is published to a file and the mirror every day, and its last
+sections (the FAQ, the day-in-the-life walkthrough) were the parts regularly
+lost or mangled. No credits, ledger rows or commands were affected.
+
+**Fix.** `daily_sync.trim_guide()` with `_cut_at_boundary()` and
+`_drop_open_markup()`: the text is trimmed at the last paragraph, line, sentence
+or word boundary (never inside a word), a trailing unclosed fence or inline span
+is dropped instead of being left open, and `GUIDE_TRIM_NOTE` is appended so the
+reader knows the document was shortened. `build_guide_messages()` now sizes its
+word target from `GUIDE_WORD_HEADROOM` (90% of the character cap, so 3,600 words
+at 24,000 characters), which leaves room for the markup and normally avoids the
+trim altogether.
+
+**Test.** `checks/check_daily_sync.py`: a short guide is returned untouched; a
+long one stays within the cap, ends on a whole line and carries the note; an
+open inline span is dropped while earlier closed spans survive; an open fence is
+dropped; a trimmed document has an even number of backticks and fences; a cap
+smaller than the note still wins. Re-running `trim_guide()` over the live guide's
+text gives 23,758 characters ending on a complete paragraph with balanced
+markup.
+
+---
+
 ## The daily guide read raw constants as rules — 2026-11-06
 
 ### A generated guide charged "50% Union dues" and invented a "3-cycle contract"

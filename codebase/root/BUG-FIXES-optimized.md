@@ -26,7 +26,7 @@ Format per entry: Symptom / Cause / Impact / Fix / Test (symbol names to grep fo
 | API | JSON type handling, retired routes | `api.py` returns 410 for old keys | `checks/` |
 | Schema | Migrations over live schema; `orders.union_discount`; `case_counters_global` | Migration entries only | `check_database.py` |
 | Runner | Summary required; bare exit/ERROR is a failure | `run_all.py` rejects silent exits | `check_runner.py` |
-| Daily sync | Endpoint/value encoding, idempotent DDL, guide source/fallback, `guild_id`, run-on-start switches, disabled without credentials | Env-driven, never crashes | `check_daily_sync.py` |
+| Daily sync | Endpoint/value encoding, idempotent DDL, guide source/fallback, guide cut off mid-word/in an open code span, `guild_id`, run-on-start switches, disabled without credentials | Env-driven, never crashes; guide trimmed at a safe boundary with headroom | `check_daily_sync.py` |
 
 **All 22 scripts pass.** Add a check to this table whenever you fix a bug.
 

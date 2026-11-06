@@ -64,6 +64,11 @@ DEFAULT_GUIDE_MAX_TOKENS = 12000
 # Roughly six characters per word, used to size the "keep it under N words"
 # instruction from the character cap so the two cannot drift apart.
 CHARS_PER_WORD = 6
+# Markdown overhead (headings, bullets, tables, blank lines) is not part of the
+# word count, so a model that fills the whole character budget with words always
+# overruns it. The word target is sized at 90% of the cap, which leaves room for
+# the markup and keeps a compliant answer inside the limit.
+GUIDE_WORD_HEADROOM = 9  # of 10
 DEFAULT_TURSO_TEMP_DIR = "turso-tmp"
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
@@ -185,7 +190,10 @@ def build_guide_messages(
 ) -> list[dict]:
     """The prompt pair that turns the bot's own surface into a how-it-works guide."""
     if max_words is None:
-        max_words = max(600, int(max_chars) // CHARS_PER_WORD)
+        max_words = max(
+            600,
+            (int(max_chars) * GUIDE_WORD_HEADROOM // 10) // CHARS_PER_WORD,
+        )
     system = (
         "You are writing the definitive, plain-language guide to how the Royal "
         "Court bot works, for the server owner, admins and players of the "
@@ -324,6 +332,77 @@ def fallback_guide(parts: dict) -> str:
             + ", ".join(checks),
         ]
     return "\n".join(lines)
+
+
+GUIDE_TRIM_NOTE = (
+    "\n\n---\n\n_This guide was trimmed at the size limit; every command and its "
+    "options are still listed in Discord's `/` menu._"
+)
+
+
+def _cut_at_boundary(text: str, limit: int) -> str:
+    """Cut ``text`` to ``limit`` characters, preferring a structural break.
+
+    A plain ``text[:limit]`` split the live guide in the middle of a word (and
+    inside an inline code span), so the tail of every over-long guide was
+    unusable. Paragraph, line, sentence and finally word boundaries are tried in
+    that order. Only the last 40% of the window may be given up to reach one, so
+    a late break cannot silently throw away most of the document.
+    """
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    window = text[:limit]
+    floor = int(limit * 0.6)
+    for separator in ("\n\n", "\n"):
+        index = window.rfind(separator)
+        if index >= floor:
+            return window[:index]
+    for separator in (". ", "! ", "? "):
+        index = window.rfind(separator)
+        if index >= floor:
+            return window[: index + 1]
+    index = window.rfind(" ")
+    return window[:index] if index > 0 else window
+
+
+def _drop_open_markup(text: str) -> str:
+    """Remove a fenced block or inline code span the cut left open."""
+    if text.count("```") % 2:
+        index = text.rfind("```")
+        if index > 0:
+            text = text[:index]
+    if text.count("`") % 2:
+        index = text.rfind("`")
+        if index > 0:
+            text = text[:index]
+    return text
+
+
+def trim_guide(text: str, max_chars: int = DEFAULT_GUIDE_MAX_CHARS) -> str:
+    """Fit a generated guide into ``max_chars`` without breaking its tail.
+
+    The guide is a document, not a chat message: cutting it at an arbitrary
+    character leaves a half-written word, an unclosed ``code span`` and no sign
+    that anything is missing. This trims at the last paragraph/line/sentence/word
+    boundary, drops markup the cut left open, and appends
+    :data:`GUIDE_TRIM_NOTE` so the result reads as intentionally shortened.
+    """
+    text = str(text or "")
+    max_chars = max(1, int(max_chars))
+    if len(text) <= max_chars:
+        return text
+    note = GUIDE_TRIM_NOTE
+    if max_chars <= len(note):
+        # Degenerate cap (the env floor is 400): the note cannot fit, so the
+        # hard limit wins over readability.
+        return text[:max_chars]
+    body = _drop_open_markup(_cut_at_boundary(text, max_chars - len(note)))
+    body = body.rstrip()
+    if not body:
+        return text[:max_chars]
+    return (body + note)[:max_chars]
 
 
 # ---------------------------------------------------------------------------
@@ -1078,7 +1157,7 @@ class DailySync:
                 self.bot.logger.exception("Bot guide AI call failed; using fallback.")
         if not guide:
             guide = fallback_guide(parts)
-        return guide[: self.guide_max_chars]
+        return trim_guide(guide, self.guide_max_chars)
 
     async def deliver_guide(self, guide: str) -> None:
         if self.guide_path:

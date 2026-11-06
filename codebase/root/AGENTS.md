@@ -212,6 +212,12 @@ session, **not yet loaded** — the process needs a panel restart:
 - The guide runs on `DAILY_GUIDE_MODEL` / `DAILY_GUIDE_TEMPERATURE` /
   `DAILY_GUIDE_MAX_TOKENS`, separate from the personas, and its prompt asks for a
   nine-section document with worked examples and an FAQ.
+- **Never slice the guide with `guide[:max_chars]`.** That is what cut
+  `daily_guide.md` mid-word inside an open code span (`/fishing…`) on every run.
+  Use `daily_sync.trim_guide()`, which trims at a paragraph/line/sentence/word
+  boundary, drops markup the cut left open and appends `GUIDE_TRIM_NOTE`. The
+  prompt's word budget is `GUIDE_WORD_HEADROOM` (90%) of the character cap so a
+  compliant answer fits without a trim at all; `check_daily_sync.py` pins both.
 
 The paid-key note below is history: the personas now run on the cline-pass
 subscription, so the `402 insufficient_credits` blocker no longer applies.

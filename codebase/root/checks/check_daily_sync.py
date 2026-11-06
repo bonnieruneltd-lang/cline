@@ -73,11 +73,11 @@ check("prompt asks for a complete document", "COMPLETE document" in messages[0][
 check("prompt asks for an FAQ", "FAQ of at least six" in messages[0]["content"])
 check("prompt asks for worked examples", "worked example" in messages[0]["content"])
 check("prompt pins the platform", "1.20.1" in messages[0]["content"])
-check("prompt sizes words from chars",
-      f"{daily_sync.DEFAULT_GUIDE_MAX_CHARS // daily_sync.CHARS_PER_WORD} words"
+check("prompt sizes words from chars, with markup headroom",
+      f"{daily_sync.DEFAULT_GUIDE_MAX_CHARS * daily_sync.GUIDE_WORD_HEADROOM // 10 // daily_sync.CHARS_PER_WORD} words"
       in messages[0]["content"], messages[0]["content"][-200:])
 wide = daily_sync.build_guide_messages("MATERIAL", max_chars=6000)
-check("smaller cap asks for fewer words", "1000 words" in wide[0]["content"])
+check("smaller cap asks for fewer words", "900 words" in wide[0]["content"])
 check("default guide cap is roomy",
       daily_sync.DEFAULT_GUIDE_MAX_CHARS >= 20000, daily_sync.DEFAULT_GUIDE_MAX_CHARS)
 check("default source cap is roomy",
@@ -318,6 +318,38 @@ check("fallback guide is about the bot", "How the Royal Court works" in guide)
 check("fallback guide groups commands",
       "`/payout` - 2 command(s)" in guide, guide[:200])
 check("fallback guide lists modules", "config:" in guide)
+
+# --- guide trimming ---------------------------------------------------------
+# The live guide is capped at 24,000 characters. A plain slice cut it mid-word
+# and left an inline code span open ("`/fishing"), so the tail of the document
+# was unreadable. Trimming has to land on a structural boundary and say so.
+check("a guide inside the cap is untouched", daily_sync.trim_guide("short", 100) == "short")
+
+long_guide = "\n\n".join(
+    [f"## Section {i}\n" + ("word " * 30).strip() for i in range(300)]
+)
+trimmed = daily_sync.trim_guide(long_guide, 2000)
+check("trim enforces the cap", len(trimmed) <= 2000, len(trimmed))
+check("trim says it was trimmed", trimmed.endswith(daily_sync.GUIDE_TRIM_NOTE), trimmed[-120:])
+check("trim keeps whole lines",
+      trimmed[: -len(daily_sync.GUIDE_TRIM_NOTE)].rstrip().endswith("word"), trimmed[-160:])
+
+# The exact live defect: the cut lands inside "`/fishing" with the span open.
+open_span = "text\n\nUse `/casino fund` or `/fishing"
+repaired = daily_sync._drop_open_markup(open_span)
+check("an open inline span is dropped",
+      "/fishing" not in repaired and repaired.count("`") % 2 == 0, repr(repaired))
+check("closed spans before it survive", "`/casino fund`" in repaired, repr(repaired))
+open_fence = "intro\n```\ncode line\n"
+check("an open fence is dropped",
+      daily_sync._drop_open_markup(open_fence) == "intro\n", repr(daily_sync._drop_open_markup(open_fence)))
+
+fenced_doc = "\n\n".join(["## S\n" + "word " * 30 for _ in range(60)]) + "\n\n```\nunclosed"
+fenced_cut = daily_sync.trim_guide(fenced_doc, 1200)
+check("trim never leaves a fence open", fenced_cut.count("```") % 2 == 0, fenced_cut[-120:])
+check("trim leaves balanced inline code", fenced_cut.count("`") % 2 == 0, fenced_cut[-120:])
+check("trim on a degenerate cap still respects it",
+      len(daily_sync.trim_guide("x" * 500, 50)) == 50)
 
 print("\nFAILURES:", len(fails))
 for f in fails:
