@@ -115,6 +115,17 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 
 ### Last known live state
 
+2026-11-06 (**session close-out**). Working tree `fce0e4c`, clean and pushed; live
+tree **86 files**, all byte-identical except the generated `daily_guide.md`;
+**21/21**, `compileall`/`pyflakes` clean, **114 / 16** pinned. The only outstanding
+action for the `/slots` + `/roulette` release is the **panel restart** — the
+process still serves 112 commands until then. Six live shop orders still hold
+unused `RC-…` keys. The Forge mod target was pinned by the owner to
+**Minecraft 1.20.1 / Forge 47.x** and `forge-mod/README.md` was corrected (stale
+`410` contract section) and extended with the verified redeem payload, the
+item-key families, the gaps and a build order. New known gap: no `POST
+/api/preview`, so nothing can show a key's contents before spending it.
+
 2026-11-06 (**`/slots` and `/roulette` uploaded; restart pending**). Two new
 one-shot Casino games, both settled through `casino.begin_wager()` /
 `finish_wager()` in a single transaction: `/slots` (three weighted reels, three of
@@ -1017,7 +1028,16 @@ consistent.
   poker hands. Draining the house mid-hand can make settlement and the startup
   refund fail; a withdraw-time reserve check would close it. The deal-time cover
   check itself is correct.
-- Forge mod (`forge-mod/` is a README only).
+- Forge mod: `forge-mod/` is a **README only** (no Java, Gradle or `mods.toml`).
+  The target is pinned to **Minecraft 1.20.1 / Forge 47.x** (owner decision,
+  2026-11-06) and the README now carries the verified `/api/redeem` payload, the
+  four item-key families, the known gaps and a build order. Contract-key
+  redemption is retired (`410 no_in_game_currency`) — do not build it.
+- There is no non-consuming `POST /api/preview` for shop keys: `/api/redeem`
+  marks the order redeemed in the same call, so a client cannot show a key's
+  contents before spending it and a disconnect between the POST and the item
+  grant burns the key. Add the preview route before any mod work (README
+  section 9 item 10).
 - Contracts approved before `/contract setboard` was configured have no board
   message; they can still be claimed with `/contract claim`.
 - The `checks/` suite **is** the automated test suite: 21 standalone scripts run

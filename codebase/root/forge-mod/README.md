@@ -3,6 +3,12 @@
 This folder is a **placeholder**. There are no Java sources, no `build.gradle`
 and no `mods.toml` yet. Nothing here is buildable or installable.
 
+**Target pinned 2026-11-06 by the owner: Minecraft 1.20.1 on Forge 47.x**
+(the 1.20.1 line — 47.2.x/47.3.x are the concrete builds; NeoForge is *not*
+used, and 1.20.1 is not a NeoForge target). Record any change to that pin here
+before writing code, because it decides the Gradle plugin, the mappings
+(`official` 1.20.1 vs Parchment) and every `ItemStack`/`CompoundTag` call.
+
 The README describes the intended mod so the next developer knows what to
 build and how it must talk to the bot.
 
@@ -94,69 +100,101 @@ Errors:
 Redemption is atomic. If two clients race, only one gets `200`; the other gets
 `409`.
 
-### `POST /api/contract/preview`
+### `POST /api/contract/preview` and `POST /api/contract/redeem` — **RETIRED**
 
-Looks up a contract key without spending it.
-
-Request:
+Both routes are still registered, and both answer **`410 no_in_game_currency`**:
 
 ```json
-{ "redeem_key": "UC-AAAAAA-BBBBBB" }
+{ "error": "no_in_game_currency",
+  "detail": "Union contracts are paid as Discord credits. Use /contract claim." }
 ```
 
-Success `200`:
+Workers' Union and Crown contracts pay **Discord credits only** — the 25% upfront
+and 75% completion tranches land in the contract's claim account through
+`/contract claim` (or the Claim Credit button). There is no in-game currency for
+contracts and no contract keys: `UC-…`/`UF-…` keys do not exist any more, and any
+old one is inert. **Do not build contract-key redemption into the mod**, and do
+not reintroduce a key format for contracts. (This section used to document a 200
+response and a "marks the key used" flow; that described the retired v1 API and
+was corrected on 2026-11-06.)
+
+---
+
+## Verified on 2026-11-06 (read this before writing code)
+
+The bot side of `/api/redeem` was exercised end to end against a throwaway
+database: a real `shop.checkout()` purchase wrote order `RC-866A14-8B891A`, and
+the real `RedeemAPI` handler answered
 
 ```json
-{
-  "ok": true,
-  "case_id": "UN-RUNE-001",
-  "nation": "Rune",
-  "owner_type": "nation",
-  "kind": "upfront",
-  "amount": 250000,
-  "redeemed": false,
-  "eligible": true,
-  "status": "approved",
-  "items": []
-}
+{ "order_id": 1, "redeem_key": "RC-866A14-8B891A", "buyer_id": 10,
+  "player_uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "player_name": "Notch",
+  "shulker_fee": 0,
+  "items": [ { "key": "minecraft:dirt",  "display_name": "Dirt …", "quantity": 64 },
+             { "key": "minecraft:stick", "display_name": "Stick",   "quantity": 128 } ] }
 ```
 
-`owner_type` is `nation` or `kingdom`. `kind` is `upfront` or `final`.
-`eligible` is false when the key is not currently payable (not approved yet,
-escrow not released, already redeemed, etc.).
+with `409 already_redeemed` (carrying `redeemed_uuid`) on a second call, `401`
+on a bad token, `404` on an unknown key and `400` when `player_uuid` is missing.
+The purchase was charged exactly once. **That payload is the whole contract
+today** — `key`, `display_name`, `quantity`, and nothing else.
 
-### `POST /api/contract/redeem`
+### The item keys you will actually receive
 
-Spends a contract key.
+| Family | Count | What the mod must do |
+|---|---|---|
+| `minecraft:<id>` | 303 | vanilla 1.20.1 registry lookup, straight to `ItemStack` |
+| `bundle:<set>` | 3 | **never reaches you** — `shop.checkout` expands bundles into their component `minecraft:<id>` keys at purchase |
+| `enchant:<id>:<level>` | 8 | **not expanded and not described in the payload**: you must parse the key (`enchant:mending:1`) and build an enchanted book yourself |
+| `backport:<id>` | 7 (27 rows flagged `is_backported`) | these do not exist in vanilla — the mod (or a datapack) has to provide them |
 
-Request:
+### Four gaps to close, in the order they block work
 
-```json
-{
-  "redeem_key": "UC-AAAAAA-BBBBBB",
-  "player_uuid": "00000000-0000-0000-0000-000000000000",
-  "confirm": true
-}
-```
+1. **No preview route.** `/api/redeem` marks the order `redeemed` in the same call
+   that returns the items, so the "confirmation screen before granting" required
+   by the constraints below cannot be built against it, and a player who
+   disconnects after the POST loses the key without items. The bot needs a
+   non-consuming `POST /api/preview` (same payload, no state change) — **not yet
+   implemented**, see README section 9 item 10. Do not work around it by
+   redeeming twice.
+2. **No enchant/backport fields.** Either parse `enchant:<id>:<level>` in the mod
+   or extend the payload with `enchant: {id, level}` and `backported: true`.
+   Extending it is additive and safe for old clients.
+3. **Reachability.** `API_HOST=0.0.0.0`, `API_PORT=8080` are set on the host, but
+   port 8080 there is answered by the hosting panel's HTTPS proxy (probe returns
+   the panel's `401 {"error":"The required authorization heads were not present"}`,
+   not our `{"ok": true}` health body). The API is therefore not reachable from
+   outside until a port/allocation is assigned; check the panel log for
+   `Redemption API listening on …` first.
+4. **No `max_stack` in the payload.** 1.20.1 lets you read
+   `stack.getMaxStackSize()` from the item itself, so this is the least urgent —
+   but overflow handling still has to be written and tested.
 
-`confirm` must be `true`; otherwise the API returns
-`400 confirmation_required`. Success returns the same metadata as preview plus
-`ok: true`.
+### Suggested build order (1.20.1 / Forge 47.x)
 
-Contract redemption currently returns **no items** and does not move credits in
-the bot's database. It only marks the key used. How the in-game economy should
-receive the `amount` is an open design decision. Do not assume the mod should
-mint currency until that decision is written down here.
+1. Gradle MDK for 1.20.1 + `mods.toml`, mod id `royalcourt`, package
+   `com.royalcourt.redeem`.
+2. Config (`ForgeConfigSpec`): `apiBaseUrl`, `apiToken`, `timeoutSeconds`.
+   Token from config only — never source, never logs.
+3. `/redeem <key>` client command (or a key-entry GUI) that calls **preview**
+   first and renders item name × quantity.
+4. Confirm → `POST /api/redeem` → grant each stack **on the server thread**
+   (`ServerLifecycleHooks`/`DistExecutor`), dropping overflow at the player's
+   feet, then post a chat receipt.
+5. Map `enchant:<id>:<level>` → `EnchantedBookItem` with a stored enchantment;
+   map `backport:*` → whatever the mod registers.
+6. Fail closed on every network error, and treat `409` as "already claimed by
+   <uuid>" rather than an error.
 
 ---
 
 ## Design constraints for the implementation
 
-* Pick and document a Forge version and Minecraft version before writing code.
 * Keep the API token in the mod config, never in source or logs.
-* Treat every key as opaque; never parse it to infer an order.
+* Treat every key as opaque; never parse it to infer an order (`enchant:` keys
+  are the one documented exception, because the payload carries no enchant data).
 * Always show a confirmation screen with item names and quantities before
-  granting items.
+  granting items — which needs the `POST /api/preview` route above.
 * Handle `409 already_redeemed` gracefully; it is a normal race, not a crash.
 * If the API is unreachable, fail closed: do not grant items.
 * Give items inside a server-thread task, never on the network thread.
@@ -168,12 +206,13 @@ mint currency until that decision is written down here.
 
 | Item | Status |
 |---|---|
-| Forge/Minecraft version chosen | TODO |
+| Forge/Minecraft version chosen | **DONE — Minecraft 1.20.1, Forge 47.x** (owner decision, 2026-11-06) |
 | Gradle project scaffold | TODO |
 | Config (API URL, token, timeout) | TODO |
-| Shop key entry + confirmation GUI | TODO |
-| `POST /api/redeem` client | TODO |
-| Item granting + overflow handling | TODO |
-| Contract preview/redeem client | TODO |
-| In-game economy hook for contract amounts | TODO (design undecided) |
+| Shop key entry + confirmation GUI | TODO (blocked by the missing `POST /api/preview`) |
+| `POST /api/redeem` client | TODO — contract verified, payload documented above |
+| Item granting + overflow handling | TODO (plus the `enchant:`/`backport:` key mapping) |
+| Contract preview/redeem client | **REMOVED** — both routes answer `410`; contracts pay Discord credits |
+| In-game economy hook for contract amounts | **NOT PLANNED** — no in-game contract currency |
 | Offline/retry safety | TODO |
+| API reachable from the Minecraft server | **BLOCKED** — port 8080 is the panel proxy; needs an allocation |

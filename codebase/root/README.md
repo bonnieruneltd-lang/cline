@@ -127,7 +127,7 @@ still local-only.
 | Daily allowance | DONE | `/daily`; 24h cooldown, 100–400% streak multiplier, 60% floor |
 | Leaderboards | DONE | `/leaderboard nation`, `kingdom`, `individual`; never combined |
 | Contract key HTTP API | RETIRED | Returns `410 no_in_game_currency`; contracts pay in Discord |
-| **Forge mod** | **TODO** | `forge-mod/` has a README but no source |
+| **Forge mod** | **TODO** | Target pinned to **Minecraft 1.20.1 / Forge 47.x** (2026-11-06); `forge-mod/` is still a README only — no Java, no Gradle, no `mods.toml` |
 | In-game shop item delivery | TODO | Depends on the Forge mod |
 | Minecraft account linking | NOT PLANNED | Deliberately avoided; keys are the credential |
 
@@ -1046,10 +1046,16 @@ README. The live bot runs from the account root, not from that folder.
 
 ## 9. Known gaps and next steps
 
-1. **Forge mod (TODO).** The `forge-mod/` tree has no source. It needs a Forge
-   version, item delivery, shop key preview/redeem calls and a config for the
-   API base URL and token. Contract key routes now answer `410
-   no_in_game_currency`; do not resurrect in-game contract money.
+1. **Forge mod (TODO).** The `forge-mod/` tree has no source. The target is
+   pinned: **Minecraft 1.20.1 on Forge 47.x** (owner decision, 2026-11-06;
+   NeoForge is not used). It needs a Gradle MDK, a `mods.toml`, a config for the
+   API base URL/token, key entry plus a confirmation screen, the `/api/redeem`
+   client and item granting with overflow handling. `forge-mod/README.md` now
+   documents the **verified** request/response payload, the four item-key
+   families (`minecraft:`, `bundle:` which never reaches you, `enchant:<id>:<level>`
+   which you must parse, `backport:` which the mod must provide) and a build
+   order. Contract key routes answer `410 no_in_game_currency`; do not resurrect
+   in-game contract money.
 2. **Claim board backfill (nice to have).** `/contract setboard` posts new
    boards, but contracts approved before the board existed have no
    `board_message_id`, so they are not listed. `/contract claim` still works
@@ -1114,6 +1120,14 @@ README. The live bot runs from the account root, not from that folder.
    "keep the three newest per file plus everything from the current build, drop
    the rest once a release has survived a payout cycle". Prune only with an
    explicit decision — never as part of a code change.
+10. **There is no non-consuming preview route for shop keys.** `/api/redeem`
+    looks the order up *and* marks it `redeemed` in the same call, so a client
+    cannot show the player what the key is worth before spending it — and a
+    disconnect between the POST and the item grant burns the key. The Forge mod
+    needs `POST /api/preview` (same payload, `status` echoed, no state change) to
+    honour its own confirmation-screen rule. Small, additive, and worth doing
+    before mod work starts. Until then the only safe client behaviour is
+    "confirm before you call, grant immediately after".
 
 ---
 
@@ -1193,6 +1207,50 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-06 — Session close-out: `/slots` + `/roulette` live, Forge target pinned (docs uploaded; **restart still required for the games**)
+
+**State at close.** The working tree is `fce0e4c` and clean; the live tree is **86
+files**, byte-identical to it except the generated `daily_guide.md`;
+`checks/run_all.py` **21/21**, `compileall` and `pyflakes` clean; surface pinned at
+**114 commands / 16 cogs**. The two new games are uploaded with
+`.bak-20261106-145803` backups — **the running process still serves 112 commands
+until someone restarts it from the panel**, and that restart is the only thing
+outstanding for this release. No schema change, so nothing to migrate. All six
+pending shop orders in the live database still carry unused `RC-…` keys
+(`RC-B9D30B-0A63C8`, `RC-D0F192-D79BF2`, `RC-24C1C1-6D57BA`, `RC-7ECB46-DF4892`,
+`RC-63E72C-4BD927`, `RC-234C9F-FCE893`) worth 4,322,250 / 137,250 / 512 / 1,024 /
+922 / 379,350 credits of goods.
+
+**Forge mod — decision recorded.** The owner pinned the mod to **Minecraft 1.20.1
+on Forge 47.x** (NeoForge not used). `forge-mod/` is still a README only: a repo
+and host search for `*.java`, `*.gradle`, `gradle.properties`, `mods.toml` and
+`*.jar` finds nothing, and every row of its own status checklist is still TODO.
+Its README was corrected and extended this session:
+- the `POST /api/contract/preview|redeem` section documented a `200` payload that
+  the code no longer serves — both routes have answered `410
+  no_in_game_currency` since contracts moved to Discord credits. It now says
+  RETIRED and tells the reader not to build contract-key redemption;
+- the **verified** `/api/redeem` payload, captured by driving the real
+  `shop.checkout()` and the real `RedeemAPI` handlers against a throwaway
+  database (200 with `items[]`, 409 `already_redeemed` with `redeemed_uuid`,
+  404 unknown key, 401 bad token, 400 missing UUID, treasury charged once);
+- the four item-key families (`minecraft:*` 303, `bundle:*` 3 — expanded at
+  checkout so they never reach the mod, `enchant:<id>:<level>` 8 — **not**
+  expanded and not described by the payload, `backport:*` 7 — not vanilla);
+- the four gaps in the order they block work, the reachability finding
+  (port 8080 on the host is the panel's HTTPS proxy, so `/api/health` is not
+  publicly reachable), and a 1.20.1-specific build order.
+
+**New known gap.** README section 9 item 10: there is no non-consuming
+`POST /api/preview`, so a client cannot show a key's contents before spending it
+and a disconnect between the redeem POST and the item grant burns the key. That
+is the first bot-side task before mod work.
+
+**Verified.** `checks/run_all.py` **21/21**, `compileall`/`pyflakes` clean; the
+three changed docs were uploaded with `.bak` backups, SHA-256 matched and the
+whole tree re-pulled (86 files, all identical). Docs only — no restart needed for
+this entry.
 
 ### 2026-11-06 — `/slots` and `/roulette` (uploaded; **restart required**)
 
