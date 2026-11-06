@@ -26,10 +26,14 @@ Three economy account types that **never mix**: `nation`, `kingdom`, `individual
 10. **Crown tax** = 100% of the regular-soldier payout line, after a 30-day grace. Crown supplier contracts buy one catalog item each (legacy paths only).
 
 ## Commands
-- **114 commands / 16 cogs** (pinned by `checks/check_cogs.py`).
+- **115 commands / 16 cogs** (pinned by `checks/check_cogs.py`).
 - `/faction contract` takes exactly `faction`, `account`, `proposal`, `budget`. Retired names (`crown`, `union`, `audience`, `contract request`, …) must not return.
 - Shop keys are single-use `RC-XXXXXX-XXXXXX`, DM'd to buyer; `markredeemed` is once-only and never rewrites an existing redemption UUID.
 - `/give` is treasury→member only; there is no "individual source" direction.
+- `/contract invite` brings a helper into a negotiation (thread membership, or an
+  overwrite on the channel fallback) and the persona answers them; close/claim/
+  release/reopen stay with the requester and Union Admins. Several negotiations
+  run at once: locks are per channel with per-contract history.
 
 ## Deployment (README §8)
 1. `python3 checks/run_all.py` + `compileall` + `pyflakes` — upload nothing red.

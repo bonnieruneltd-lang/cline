@@ -22,9 +22,12 @@ python3 -m pyflakes .                        # unused / undefined names
 - `paramiko` is needed for SFTP only, not a bot dependency.
 
 ## Command surface (pinned)
-- **114 commands / 16 cogs**, asserted by `checks/check_cogs.py`.
+- **115 commands / 16 cogs**, asserted by `checks/check_cogs.py`.
 - Only these account kinds exist: `nation`, `kingdom`, `individual`. No
   "individual source" anywhere — `/give` is treasury→member only.
+- `/contract invite` adds a helper to a negotiation and the persona answers them
+  (`Thread.fetch_member`, never `Thread.permissions_for`); several negotiations
+  run concurrently, one lock per channel.
 - `/faction` is the only faction command; `/faction contract` exposes exactly
   `faction`, `account`, `proposal`, `budget`. Retired names (`crown`, `union`,
   `audience`, `contract request`, …) must not come back.

@@ -467,7 +467,7 @@ Every source file and what it is for. Sub-packages have their own README.
 | `checks/check_poker.py` | Poker evaluator (category order, wheel, best five of seven), side pots, uncalled-bet refunds, short all-ins not reopening raises, odd chips, blinds and the big blind's option, 400 seeded hands with chips conserved |
 | `checks/check_shop.py` | Royal Shop and kit pricing (slot-limit shulker fee, nation/kingdom discounts, the Union 50% split that never stacks, bundle expansion, family bans), then `/shop buy`, `/shop order`, `/shop markredeemed`, `/kit create` and `/kit buy` driven end to end: exact debit, order rows, delivered components, DM'd key, ledger row, short-treasury and banned-item refusals, the 7-day cooldown and double redemption |
 | `checks/check_gilbert.py` | DeepSeek alias/base-URL normalisation, both reply shapes (plain + Cline `data{}` envelope), per-instance model/temperature/token overrides, provider failure hints (401/402/404/429/empty-content), the lookup trigger/query/format/cap and its disabled path, prompt tier/context facts |
-| `checks/check_cogs.py` | Concurrent `/daily` claims plus import and cog-load smoke test (114 commands, 16 cogs) |
+| `checks/check_cogs.py` | Concurrent `/daily` claims plus import and cog-load smoke test (115 commands, 16 cogs) |
 | `checks/check_daily_sync.py` | Turso endpoint/value encoding and idempotent DDL, guide prompt completeness (sections, FAQ, platform, word sizing), the ECONOMY RULES wording, guide model/temperature/token overrides and clamping, `guild_id` resolution, run-on-start switches, disabled without credentials |
 | `checks/check_creation_race.py` | Concurrent creation must produce exactly one account and one bonus row; approval and direct-add name races close cleanly |
 | `checks/check_runner.py` | The runner rejects an exception or bare exit with no summary instead of reporting a false pass |
@@ -1233,6 +1233,31 @@ README. The live bot runs from the account root, not from that folder.
 * Legacy rows (`redeem_key` present) are treated as fully owed: both tranches
   are claimable even without a release, because the old code charged them.
 
+**The negotiation space and who may talk in it.** `/faction contract` opens a
+private thread (`union-contract-*` / `crown-contract-*`, archived per
+`CONTRACT_THREAD_ARCHIVE_MINUTES`) with the requester and every member of the
+Union Admin role added to it. Three things matter:
+
+* **Helpers can join.** Threads are created `invitable`, so the party can use
+  Discord's own *Add members*; `/contract invite member:<@user>` does the same
+  from inside the bot (and reopens an archived/locked ticket first). The
+  requester or a Union Admin may invite; a finished ticket (`rejected`,
+  `cancelled`, `completed`, `closed`) takes nobody. On the text-channel fallback
+  the invite writes a member overwrite instead of thread membership.
+* **The persona answers everyone who is actually in the space** —
+  `_may_participate()`: the requester, Union Admins, and anyone added (thread
+  membership is asked of Discord with `Thread.fetch_member`, because
+  `Thread.permissions_for` resolves the *parent* channel and would say yes to any
+  member who can see it; the channel fallback uses the overwrites). The
+  authority actions — close, claim, release, reopen — stay on `_can_speak()`
+  (requester or Union Admin), so a helper can argue about foundations but cannot
+  take the money.
+* **Several negotiations run at once.** `Contract._locks` is keyed by channel, so
+  two threads talk to Gilbert/Albert in parallel while messages inside one thread
+  are serialised (a burst in one ticket still gets one coherent reply per
+  message). History is stored per contract (`contracts.history`), and every AI
+  call opens its own HTTP session, so nothing leaks between conversations.
+
 ---
 
 ## 11. House style for future contributors
@@ -1261,6 +1286,48 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-06 — Contract discussions take helpers, and several talk at once (**uploaded; restart pending**)
+
+**What was asked.** Whether the bots allow several conversations at the same
+time, and whether a party can add people to its contract discussion to help it
+talk.
+
+**Several conversations already ran in parallel.** `Contract._locks` is a
+per-channel map (`_locks[channel.id]`), so two negotiation threads are answered
+concurrently while messages inside one thread queue behind that thread's lock;
+`contracts.history` is per case, and `GilbertAI.complete()` opens its own
+`aiohttp.ClientSession` per call, so no context or connection is shared. The
+suite now proves it: two `on_message` calls are gathered and the AI stub records
+a peak of **2** in flight, with each contract's stored history holding only its
+own turn.
+
+**Helpers could not join.** The thread was created `invitable=False` and only the
+requester plus Union Admins were added, so a party had no way to bring a builder
+or treasurer in; and `_can_speak()` (requester or Union Admin) meant anyone
+added would have been ignored by Gilbert/Albert anyway.
+
+**Fix.** Threads are created `invitable=True` (Discord's own *Add members*
+works), `/contract invite member:@user` adds someone from the bot (reopening an
+archived/locked ticket first, or writing a member overwrite on the
+text-channel fallback), and `_may_participate()` now decides who the persona
+answers: the requester, Union Admins, and anyone actually in the space. For
+threads that is `Thread.fetch_member()` — **not** `Thread.permissions_for()`,
+which resolves the *parent* channel and would have said yes to every member who
+can see it — and for the channel fallback the overwrites. Close/claim/release/
+reopen stay on `_can_speak()`, so a helper can argue but cannot move money.
+
+**Verified.** `checks/check_contracts.py` drives it: a stranger is ignored, two
+negotiations are answered in parallel with separate histories, the requester can
+invite, the invited helper is answered (thread and channel fallback), a helper
+cannot invite others, an archived ticket is reopened to add someone, a finished
+ticket refuses, and the created thread is invitable. `checks/run_all.py`
+**22/22**, `compileall`/`pyflakes` clean.
+
+**Surface.** `/contract invite` is the 115th command (`checks/check_cogs.py`,
+the README/AGENTS/BUG-FIXES counts updated). **Uploaded** with
+`.bak-<stamp>` backups and SHA-256 checks; **restart pending** so the bot picks
+up the new command and the listener change.
 
 ### 2026-11-06 — Full-file audit ("check all the files") and the guide-trim fix (**uploaded; restart pending**)
 

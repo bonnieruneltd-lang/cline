@@ -1,4 +1,4 @@
-"""Daily-claim concurrency plus import/cog-load smoke test (expects 114 commands)."""
+"""Daily-claim concurrency plus import/cog-load smoke test (expects 115 commands)."""
 import asyncio, os, sys, tempfile, datetime as dt
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
@@ -67,7 +67,9 @@ async def cog_smoke():
         # action exposes only its own options; /contract remains the lifecycle
         # group. 112 adds the top-level /give treasury-to-member grant.
         # 114 = 112 + the two casino games /slots and /roulette.
-        assert n == 114, f"expected 114 commands, found {n}"
+        # 115 adds /contract invite, so the party can bring a builder or
+        # treasurer into its own negotiation (and the persona answers them).
+        assert n == 115, f"expected 115 commands, found {n}"
         assert len(COGS) == 16, f"expected 16 cogs, found {len(COGS)}"
         names = {command.qualified_name for command in bot.tree.walk_commands()}
         for required in (
@@ -75,6 +77,7 @@ async def cog_smoke():
             "faction join", "faction contract", "faction commitment",
             "faction uncommit", "faction status", "faction fund",
             "faction withdraw", "faction setchannel",
+            "contract invite",
             "slots", "roulette",
         ):
             assert required in names, f"missing command {required}"

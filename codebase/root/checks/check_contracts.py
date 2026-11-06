@@ -10,6 +10,8 @@ import sys
 import tempfile
 from types import SimpleNamespace
 
+import discord
+
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
 from database import AccountMissing, Database, now_iso  # noqa: E402
@@ -136,8 +138,10 @@ class FakeParent:
         self.id = 777
         self.category = None
         self.last_thread = None
+        self.last_kwargs = {}
 
     async def create_thread(self, name, **kwargs):
+        self.last_kwargs = dict(kwargs)
         self.last_thread = FakeThread(name, self.guild)
         return self.last_thread
 
@@ -564,6 +568,273 @@ async def main():
     check("Gilbert is told membership is not required",
           "Membership is never required" in union_system)
     check("the Union reply was posted", "let's have a look" in (union_channel.sent[-1] or ""))
+
+    # --- helpers can join a negotiation, and talks run side by side ---------
+    # A negotiation is a private thread: only the requester and the Union Admins
+    # are added when it opens, so a party could not bring a builder or treasurer
+    # in to help. /contract invite adds them, and the persona has to answer them
+    # (an added member talking to a wall is the bug this pins).
+    class Person:
+        def __init__(self, uid, name, *, admin=False, bot=False):
+            self.id = uid
+            self.display_name = name
+            self.mention = f"<@{uid}>"
+            self.bot = bot
+            self.roles = []
+            self.guild_permissions = SimpleNamespace(administrator=admin)
+
+    class SpacePermissions:
+        def __init__(self, inside):
+            self.view_channel = inside
+            self.send_messages = inside
+
+    class SpaceThread:
+        """Private-thread stand-in: membership decides who can see it."""
+
+        def __init__(self, tid, guild, name="union-contract-space"):
+            self.id = tid
+            self.name = name
+            self.guild = guild
+            self.mention = f"<#{tid}>"
+            self.members = set()
+            self.sent = []
+            self.archived = False
+            self.locked = False
+            self.added = []
+
+        def typing(self):
+            return FakeTyping()
+
+        async def add_user(self, member):
+            if self.archived or self.locked:
+                raise discord.HTTPException(
+                    SimpleNamespace(status=403, reason="Forbidden"), "Forbidden"
+                )
+            self.members.add(member.id)
+            self.added.append(member.id)
+
+        async def edit(self, **kwargs):
+            if "archived" in kwargs:
+                self.archived = bool(kwargs["archived"])
+            if "locked" in kwargs:
+                self.locked = bool(kwargs["locked"])
+
+        async def fetch_member(self, user_id):
+            """Discord's thread-membership probe: absent means NotFound."""
+            if int(user_id) not in self.members:
+                raise discord.NotFound(
+                    SimpleNamespace(status=404, reason="Not Found"), "Unknown Member"
+                )
+            return SimpleNamespace(id=int(user_id))
+
+        def permissions_for(self, member):
+            # Deliberately permissive, like a real Thread: discord.py resolves
+            # the *parent* channel, so a stranger can look permitted here. The
+            # join test below proves the membership probe is what decides.
+            return SpacePermissions(True)
+
+        async def send(self, text=None, embed=None, **kwargs):
+            self.sent.append(text if text is not None else embed)
+
+    class SpaceChannel:
+        """Text-channel ticket stand-in: overwrites decide who may speak."""
+
+        def __init__(self, cid, guild=None):
+            self.id = cid
+            self.name = "union-contract-channel"
+            self.mention = f"<#{cid}>"
+            self.guild = guild
+            self.overwrites = {}
+            self.sent = []
+
+        def typing(self):
+            return FakeTyping()
+
+        async def set_permissions(self, member, **kwargs):
+            self.overwrites[member.id] = kwargs
+
+        def permissions_for(self, member):
+            return SpacePermissions(member.id in self.overwrites)
+
+        async def send(self, text=None, embed=None, **kwargs):
+            self.sent.append(text if text is not None else embed)
+
+    class SpaceGuild:
+        id = 1
+
+        def __init__(self, spaces):
+            self.spaces = spaces
+            self.default_role = None
+            self.me = None
+
+        def get_channel(self, channel_id):
+            return self.spaces.get(int(channel_id))
+
+        def get_role(self, role_id):
+            return None
+
+        def get_member(self, member_id):
+            return None
+
+    class InviteInteraction:
+        def __init__(self, guild, user, channel_id=None):
+            self.guild = guild
+            self.guild_id = guild.id
+            self.channel_id = channel_id
+            self.user = user
+            self.response = FakeResp()
+            self.followup = FakeResp()
+
+    class EchoAI:
+        """Replies with the turn it was given, so histories can be compared."""
+
+        def __init__(self, delay=0.0):
+            self.delay = delay
+            self.inflight = 0
+            self.peak = 0
+
+        async def complete(self, messages):
+            self.inflight += 1
+            self.peak = max(self.peak, self.inflight)
+            try:
+                if self.delay:
+                    await asyncio.sleep(self.delay)
+                return f"echo:{messages[-1]['content']}"
+            finally:
+                self.inflight -= 1
+
+    helper = Person(701, "Helper")
+    outsider = Person(702, "Outsider")
+    second_helper = Person(703, "Treasurer")
+    leader = Person(99, "Leader")
+
+    space_a = SpaceThread(8101, None)
+    space_b = SpaceThread(8102, None)
+    guild = SpaceGuild({8101: space_a, 8102: space_b})
+    space_a.guild = guild
+    space_b.guild = guild
+    # cog_load() warms this cache from the contracts table; the fakes are not
+    # discord.Thread instances, so seed it the same way here.
+    cog._thread_ids = {space_a.id, space_b.id}
+
+    cid_a = await make_pending(db, guild.id, nid, budget=1_500, case_id="UN-INVITE-001")
+    cid_b = await make_pending(db, guild.id, nid, budget=1_700, case_id="UN-INVITE-002")
+    await db.set_contract_thread(cid_a, space_a.id)
+    await db.set_contract_thread(cid_b, space_b.id)
+
+    cog.bot = SimpleNamespace(
+        db=db, logger=SimpleNamespace(exception=lambda *a, **k: None)
+    )
+    cog.ai = EchoAI(delay=0.05)
+
+    def message(person, text, space):
+        return SimpleNamespace(
+            author=person,
+            guild=guild,
+            content=text,
+            channel=space,
+            id=hash((person.id, text)) & 0xFFFF,
+        )
+
+    # A member who is not in the space is ignored: private means private.
+    await cog.on_message(message(outsider, "I am just reading along", space_a))
+    check("a stranger is not answered in a negotiation",
+          space_a.sent == [] and space_a.members == set(), space_a.sent)
+
+    # Two negotiations talk at the same time: the lock is per thread, not global.
+    await asyncio.gather(
+        cog.on_message(message(leader, "Alice: first question", space_a)),
+        cog.on_message(message(leader, "Bob: second question", space_b)),
+    )
+    check("two negotiations are answered in parallel", cog.ai.peak == 2, cog.ai.peak)
+    check("each negotiation posts its own reply",
+          len(space_a.sent) == 1 and len(space_b.sent) == 1,
+          (space_a.sent, space_b.sent))
+    history_a = await db.get_contract(cid_a)
+    history_b = await db.get_contract(cid_b)
+    check("the first conversation keeps its own history",
+          "Alice: first question" in (history_a["history"] or "")
+          and "Bob: second question" not in (history_a["history"] or ""),
+          history_a["history"])
+    check("the second conversation keeps its own history",
+          "Bob: second question" in (history_b["history"] or "")
+          and "Alice: first question" not in (history_b["history"] or ""),
+          history_b["history"])
+
+    # The party invites a helper; only the requester (or a Union Admin) may.
+    invite = InviteInteraction(guild, leader, channel_id=space_a.id)
+    await Contract.invite.callback(cog, invite, helper)
+    check("the requester can invite a helper", helper.id in space_a.members, space_a.members)
+    check("the invite is confirmed",
+          bool(invite.response.sent)
+          and invite.response.sent[-1].title.endswith("Member Added"),
+          invite.response.sent and invite.response.sent[-1].title)
+    announced = [
+        item.title for item in space_a.sent
+        if isinstance(getattr(item, "title", None), str)
+    ]
+    check("the space announces the new member",
+          any("Added to the Negotiation" in title for title in announced),
+          announced)
+
+    # The invited helper is answered from then on.
+    space_a.sent.clear()
+    await cog.on_message(message(helper, "What about the foundation depth?", space_a))
+    check("the invited helper is answered", len(space_a.sent) == 1, space_a.sent)
+    helper_history = await db.get_contract(cid_a)
+    check("the helper's turn reaches the model",
+          "Helper: What about the foundation depth?" in (helper_history["history"] or ""),
+          helper_history["history"])
+
+    # A helper cannot hand out access, and a finished ticket takes nobody.
+    blocked = InviteInteraction(guild, helper, channel_id=space_a.id)
+    await Contract.invite.callback(cog, blocked, second_helper)
+    check("a helper cannot invite others",
+          second_helper.id not in space_a.members
+          and "Not Authorized" in blocked.response.sent[-1].title,
+          blocked.response.sent[-1].title)
+
+    # An archived ticket is reopened so the invite still lands.
+    space_a.archived = True
+    space_a.locked = True
+    reopen = InviteInteraction(guild, leader, channel_id=space_a.id)
+    await Contract.invite.callback(cog, reopen, second_helper)
+    check("an archived ticket is reopened for the invite",
+          second_helper.id in space_a.members and not space_a.archived,
+          (second_helper.id in space_a.members, space_a.archived))
+
+    await db.update_contract(cid_b, status="rejected")
+    closed = InviteInteraction(guild, leader, channel_id=space_b.id)
+    await Contract.invite.callback(cog, closed, outsider)
+    check("a finished ticket takes no new people",
+          outsider.id not in space_b.members
+          and "Ticket Closed" in closed.response.sent[-1].title,
+          closed.response.sent[-1].title)
+
+    # The channel-ticket fallback grants an overwrite instead of membership,
+    # and there the resolved permissions are what let the helper speak.
+    channel_space = SpaceChannel(8201, guild)
+    guild.spaces[channel_space.id] = channel_space
+    cog._thread_ids.add(channel_space.id)
+    cid_c = await make_pending(db, guild.id, nid, budget=900, case_id="UN-INVITE-003")
+    await db.set_contract_thread(cid_c, channel_space.id)
+    channel_invite = InviteInteraction(guild, leader, channel_id=channel_space.id)
+    await Contract.invite.callback(cog, channel_invite, helper)
+    check("a channel ticket grants an overwrite",
+          helper.id in channel_space.overwrites, channel_space.overwrites)
+    channel_space.sent.clear()
+    await cog.on_message(message(helper, "Can we move the delivery date?", channel_space))
+    check("the helper is answered in a channel ticket",
+          len(channel_space.sent) == 1, channel_space.sent)
+    channel_space.sent.clear()
+    await cog.on_message(message(outsider, "Let me in too", channel_space))
+    check("a stranger is still ignored in a channel ticket",
+          channel_space.sent == [], channel_space.sent)
+
+    # The thread is created invitable, so Discord's own Add Members works too.
+    check("negotiation threads are invitable",
+          request_guild.parent.last_kwargs.get("invitable") is True,
+          request_guild.parent.last_kwargs)
 
     await db.close()
     print("\nFAILURES:", len(fails))

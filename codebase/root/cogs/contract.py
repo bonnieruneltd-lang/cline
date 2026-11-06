@@ -186,7 +186,48 @@ class Contract(commands.Cog):
         else:
             await interaction.response.send_message(embed=embed, ephemeral=True)
     def _can_speak(self, contract, member: discord.abc.User, settings) -> bool:
+        """Authority to act on a ticket: the requester or a Union Admin."""
         return member.id == contract["requester_id"] or self._is_union_admin(member, settings)
+
+    async def _may_participate(self, contract, member, settings, channel) -> bool:
+        """Whether the persona answers this member in the negotiation space.
+
+        The requester and Union Admins always qualify. Anyone the party brings
+        in — with ``/contract invite`` or Discord's own *Add members* on an
+        invitable thread — may talk to Gilbert/Albert too; otherwise a helper
+        would be talking to a wall. Authority actions (close, claim, release,
+        reopen) stay on :meth:`_can_speak`.
+        """
+        if self._can_speak(contract, member, settings):
+            return True
+
+        # A private thread is the authority on who is in it. ``permissions_for``
+        # resolves the *parent* channel, so it would answer yes for any member
+        # who can see the contract channel; ``fetch_member`` asks Discord.
+        fetch_member = getattr(channel, "fetch_member", None)
+        if callable(fetch_member):
+            try:
+                await fetch_member(member.id)
+                return True
+            except discord.NotFound:
+                return False
+            except discord.HTTPException:
+                # Fail closed: an unverifiable member is not answered.
+                return False
+
+        # The channel-ticket fallback has real overwrites, so permissions are
+        # the truth there.
+        permissions_for = getattr(channel, "permissions_for", None)
+        if permissions_for is None or member is None:
+            return False
+        try:
+            permissions = permissions_for(member)
+        except Exception:  # pragma: no cover - cache/permission edge cases
+            return False
+        return bool(
+            getattr(permissions, "view_channel", False)
+            and getattr(permissions, "send_messages", False)
+        )
 
     async def _get_channel(self, guild: discord.Guild, channel_id: Optional[int]):
         if not channel_id:
@@ -356,7 +397,11 @@ class Contract(commands.Cog):
             thread = await parent.create_thread(
                 name=name,
                 type=discord.ChannelType.private_thread,
-                invitable=False,
+                # The contracting party may add its own people to the
+                # discussion (Discord's *Add members*), so a negotiator can
+                # bring a builder or treasurer in; /contract invite does the
+                # same from inside the bot and answers the new member.
+                invitable=True,
                 auto_archive_duration=config.CONTRACT_THREAD_ARCHIVE_MINUTES,
                 reason=reason,
             )
@@ -616,7 +661,7 @@ class Contract(commands.Cog):
         self._thread_ids.add(message.channel.id)
 
         settings = await self.db.get_settings(message.guild.id)
-        if not self._can_speak(contract, message.author, settings):
+        if not await self._may_participate(contract, message.author, settings, message.channel):
             return
 
         lock = self._locks.setdefault(message.channel.id, asyncio.Lock())
@@ -882,6 +927,146 @@ class Contract(commands.Cog):
                     )
             except discord.HTTPException:
                 pass
+
+    # ------------------------------------------------------------------
+    # /contract invite
+    # ------------------------------------------------------------------
+    @group.command(
+        name="invite",
+        description="Add a member to this negotiation so they can talk to the representative too.",
+    )
+    @app_commands.describe(
+        member="The member to add to the discussion.",
+        case_id="Case ID (defaults to this thread's contract).",
+    )
+    async def invite(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        case_id: Optional[str] = None,
+    ):
+        if interaction.guild_id is None:
+            return await interaction.response.send_message(
+                embed=embeds.error("Guild Only", "Contracts only work inside a server."),
+                ephemeral=True,
+            )
+        if case_id:
+            contract = await self.db.get_contract_by_case(case_id)
+        else:
+            contract = await self.db.get_contract_by_thread(interaction.channel_id)
+        if contract is None:
+            return await interaction.response.send_message(
+                embed=embeds.error("Not Found", "No contract matches that case ID or thread."),
+                ephemeral=True,
+            )
+        if not self._same_guild(interaction, contract):
+            return await self._wrong_guild(interaction)
+
+        settings = await self.db.get_settings(contract["guild_id"])
+        if not self._can_speak(contract, interaction.user, settings):
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "Not Authorized",
+                    "Only the requester or a Union Admin may add people to this negotiation.",
+                ),
+                ephemeral=True,
+            )
+        if contract["status"] not in ("negotiating", "approved"):
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "Ticket Closed",
+                    f"That contract is **{contract['status']}**; only an open negotiation "
+                    "can take new people.",
+                ),
+                ephemeral=True,
+            )
+        if getattr(member, "bot", False):
+            return await interaction.response.send_message(
+                embed=embeds.error("Not a Person", "Pick a member, not a bot."),
+                ephemeral=True,
+            )
+
+        channel = await self._get_channel(interaction.guild, contract["thread_id"])
+        if channel is None:
+            return await interaction.response.send_message(
+                embed=embeds.error("Space Missing", "The negotiation channel no longer exists."),
+                ephemeral=True,
+            )
+        if await self._may_participate(contract, member, settings, channel):
+            return await interaction.response.send_message(
+                embed=embeds.info(
+                    "Already Here",
+                    f"{member.mention} can already take part in **{contract['case_id']}**.",
+                ),
+                ephemeral=True,
+            )
+
+        if not await self._add_to_space(channel, member, contract):
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "Could Not Add",
+                    "I could not add that member. I need **Manage Threads** (thread tickets) "
+                    "or **Manage Channels** (channel tickets), and the ticket must not be "
+                    "archived by someone else.",
+                ),
+                ephemeral=True,
+            )
+
+        try:
+            await channel.send(
+                embed=embeds.info(
+                    "Added to the Negotiation",
+                    f"👥 {interaction.user.mention} brought {member.mention} into "
+                    f"**{contract['case_id']}**. {self._agent_name(contract)} will answer "
+                    "them here too.",
+                )
+            )
+        except discord.HTTPException:  # pragma: no cover - best effort
+            pass
+
+        await interaction.response.send_message(
+            embed=embeds.success(
+                "Member Added",
+                f"{member.mention} can now read and speak in "
+                f"{getattr(channel, 'mention', 'the negotiation')}.",
+            ),
+            ephemeral=True,
+        )
+
+    async def _add_to_space(self, channel, member, contract) -> bool:
+        """Grant one member access to a negotiation thread or channel ticket."""
+        reason = f"Added to {contract['case_id']}"
+        # Duck-typed on purpose: a thread has ``add_user`` *and* inherits
+        # ``set_permissions``, so the thread path has to be tried first.
+        add_user = getattr(channel, "add_user", None)
+        if callable(add_user):
+            try:
+                await add_user(member)
+                return True
+            except discord.HTTPException:
+                # An archived or locked ticket refuses new members until it is
+                # reopened, so the invite reopens it rather than failing.
+                try:
+                    await channel.edit(archived=False, locked=False, reason=reason)
+                    await add_user(member)
+                    return True
+                except discord.HTTPException:
+                    return False
+        set_permissions = getattr(channel, "set_permissions", None)
+        if callable(set_permissions):
+            try:
+                await set_permissions(
+                    member,
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    attach_files=True,
+                    reason=reason,
+                )
+                return True
+            except discord.HTTPException:
+                return False
+        return False
 
     # ------------------------------------------------------------------
     # /contract status & list

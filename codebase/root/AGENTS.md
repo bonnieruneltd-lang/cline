@@ -56,8 +56,10 @@ files, so they never touch the live database. The runner only accepts a
 recognised summary line as well as exit 0; a bare exit or an `ERROR:` line is a
 failure.
 The cog-load check also asserts the command count: `bot.tree.walk_commands()`
-must list **114** commands and `COGS` must have 16 entries, asserted by
-`checks/check_cogs.py` (**114 = 112 + `/slots` and `/roulette`**; 112 = 111 +
+must list **115** commands and `COGS` must have 16 entries, asserted by
+`checks/check_cogs.py` (**115 = 114 + `/contract invite`**, which adds a helper
+to a negotiation thread and lets the persona answer them; 114 = 112 + `/slots`
+and `/roulette`; 112 = 111 +
 `/give`; 111 = 113 - `/faction audience`
 and the two specialized contract subcommands + `/faction contract`. 113 was the
 `/faction` group's sixteen action subcommands; 97 was the single `/faction`
@@ -767,6 +769,18 @@ from the hosting panel before any of this takes effect.
   `upfront_redeemed` / `final_redeemed` flags still matter for legacy rows.
 - `contract_cycle` only advances on a natural payout cycle. Keep the advance
   inside the payout transaction so a failed payout cannot burn a cycle.
+- **The negotiation space is shared with helpers, by design.** Threads are
+  created `invitable=True` and `/contract invite` adds a member (thread
+  membership, or an overwrite on the text-channel fallback), reopening an
+  archived/locked ticket first. `Contract._may_participate()` decides who the
+  persona answers: the requester, Union Admins, and anyone actually in the space.
+  For a thread use `Thread.fetch_member()` — **never**
+  `Thread.permissions_for()`, which resolves the *parent* channel and would
+  answer any member who can see the contract channel. Authority actions (close,
+  claim, release, reopen) stay on `_can_speak()`, so an invited helper can talk
+  but cannot move credits. Conversational concurrency is per channel
+  (`Contract._locks`) with per-contract history, so several negotiations run at
+  once; do not replace that with one global lock.
 
 ## Individual wallets and `/daily`
 
