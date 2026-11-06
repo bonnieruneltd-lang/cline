@@ -231,6 +231,31 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `LOOKUP_TIMEOUT` | Lookup timeout in seconds (default 12) |
 | `LOOKUP_MAX_CHARS` | Characters of search results added to the prompt (default 2200) |
 
+### Which model runs where
+
+Both personas and the guide speak the same OpenAI-compatible protocol
+(`POST {CHATBOT_API_URL}/chat/completions`), so a provider swap is `.env` only.
+
+| Role | Live setting | Why |
+|---|---|---|
+| Gilbert + Albert | `CHATBOT_MODEL=cline-pass/deepseek-v4.1-flash-1017` via `https://api.cline.bot/api/v1`, 0.75, 16k, 240 s | A player watches "typing…", so latency wins: ~8 s and correct on the leverage cap, tranche and case ID |
+| Daily guide | `DAILY_GUIDE_MODEL=cline-pass/deepseek-v4-pro`, 0.25, 16k | Runs once a day at 06:00 UTC — 50 s is free, and it wrote the longest, most complete guide (23.8k chars, 0 of 114 commands missing) |
+
+`DAILY_GUIDE_MODEL` / `_TEMPERATURE` / `_MAX_TOKENS` are **overrides only**: the
+guide inherits `CHATBOT_API_URL` and `CHATBOT_API_KEY`, so there is one key for
+both jobs and blank values fall back to the persona settings.
+
+**Reasoning models need a big `max_tokens`.** The cline-pass family thinks
+before it answers and the budget pays for both, so a small cap returns
+`HTTP 500 {"error":"empty response content"}` with *no text at all* — which the
+handler then shows as "my line to the records has gone down". Keep 16,000.
+`gilbert/ai.py:provider_hint()` names this cause (and 401/402/404/429) in the log.
+
+The legacy `AI_*` names are still read as a fallback when the matching
+`CHATBOT_*` value is blank; the live `.env` keeps the old DeepSeek values there
+as a one-line rollback, so clearing the `CHATBOT_*` lines returns the bot to
+DeepSeek rather than breaking it.
+
 ### Database
 
 SQLite in WAL mode. `royal_bank.db-wal` and `royal_bank.db-shm` are part of the
@@ -296,11 +321,18 @@ next scheduled hour. `DAILY_TASK_RUN_ON_START`, `TURSO_RUN_ON_START` and
    bot's primary store). Requires both `TURSO_DATABASE_URL` and
    `TURSO_AUTH_TOKEN`; with either missing the mirror is skipped with a log line.
 2. **AI guide (how the bot works).** The bot's own surface — every slash command
-   with its arguments and description, each loaded module's purpose, the fixed
-   economy constants, and the verification scripts — is sent to the configured
-   OpenAI-compatible model (the same `CHATBOT_*` settings Gilbert and Albert
-   use), which writes a plain-language guide to **how the bot works and how to
-   understand it**. It is posted to `DAILY_GUIDE_CHANNEL_ID` (if set), written to
+   with its arguments and description, each loaded module's purpose, an
+   **ECONOMY RULES** block of plain-English rates computed from the live modules,
+   the raw economy constants, and the verification scripts — is sent to the
+   configured OpenAI-compatible model (the `CHATBOT_*` settings Gilbert and Albert
+   use, unless `DAILY_GUIDE_MODEL` names another), which writes a plain-language
+   guide to **how the bot works and how to understand it**. The prompt asks for a
+   complete nine-section document: accounts, every way credits move, taxes and
+   dues, factions and contracts, every game with its real numbers, the command
+   surface, the data/ledger, a day-in-the-life walkthrough and a six-question FAQ.
+   The RULES block is marked authoritative because a raw constant list was once
+   mis-read ("50%" dues from `UNION_MEMBER_DISCOUNT`). It is posted to
+   `DAILY_GUIDE_CHANNEL_ID` (if set), written to
    `DAILY_GUIDE_PATH` (if set) and stored in the `daily_guides` table in the
    mirror. `DAILY_GUIDE_SOURCE_CHARS` caps the source and
    `DAILY_GUIDE_MAX_CHARS` the output. If the model is unavailable a
@@ -395,7 +427,8 @@ Every source file and what it is for. Sub-packages have their own README.
 
 | File | Purpose |
 |---|---|
-| `gilbert/ai.py` | OpenAI-compatible async chat client |
+| `gilbert/ai.py` | OpenAI-compatible async chat client (both response shapes, per-instance overrides, failure hints) |
+| `gilbert/lookup.py` | Tavily lookup for Minecraft/Forge facts, keyword-triggered, cached, never fatal |
 | `gilbert/prompt.py` | Gilbert persona, tiers, hard rules and per-contract context |
 | `gilbert/__init__.py` | Package exports |
 | `gilbert/README.md` | Persona, prompt and model configuration notes |
@@ -421,8 +454,9 @@ Every source file and what it is for. Sub-packages have their own README.
 | `checks/check_casino.py` | Blackjack rules (including multi-ace soft hands) and every settlement branch, house solvency, conservation over 200 wagers, restart refund, wallet-deletion lifecycle, poker command/table/final-stack settlement, public posts |
 | `checks/check_fishing.py` | `/fish` range/refusals, Fishing Guild guarded balance, end-to-end catch and ledger, cap/short-guild refusals, admin funding |
 | `checks/check_poker.py` | Poker evaluator (category order, wheel, best five of seven), side pots, uncalled-bet refunds, short all-ins not reopening raises, odd chips, blinds and the big blind's option, 400 seeded hands with chips conserved |
-| `checks/check_gilbert.py` | Gilbert config normalisation (DeepSeek model alias/base URL), prompt tier/context facts, disabled-without-key |
+| `checks/check_gilbert.py` | DeepSeek alias/base-URL normalisation, both reply shapes (plain + Cline `data{}` envelope), per-instance model/temperature/token overrides, provider failure hints (401/402/404/429/empty-content), the lookup trigger/query/format/cap and its disabled path, prompt tier/context facts |
 | `checks/check_cogs.py` | Concurrent `/daily` claims plus import and cog-load smoke test (114 commands, 16 cogs) |
+| `checks/check_daily_sync.py` | Turso endpoint/value encoding and idempotent DDL, guide prompt completeness (sections, FAQ, platform, word sizing), the ECONOMY RULES wording, guide model/temperature/token overrides and clamping, `guild_id` resolution, run-on-start switches, disabled without credentials |
 | `checks/check_creation_race.py` | Concurrent creation must produce exactly one account and one bonus row; approval and direct-add name races close cleanly |
 | `checks/check_runner.py` | The runner rejects an exception or bare exit with no summary instead of reporting a false pass |
 
@@ -1215,6 +1249,34 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-06 — Session close-out: AI on cline-pass, live lookups, fuller guide (**uploaded; restart pending**)
+
+**State at close.** Working tree clean at `6d53d74` and pushed; live tree
+byte-identical to it (85 project files, `.env` included); `checks/run_all.py`
+**21/21**, `compileall`/`pyflakes` clean; surface unchanged at **114 commands /
+16 cogs**. Everything from this session is uploaded with
+`.bak-20261106-174527` / `-174607` / `-180245` backups and SHA-256 verified.
+
+**What is waiting on the restart.** The process loaded its config and code at
+15:12 UTC, so until the panel restarts it, live Gilbert/Albert still answer on
+DeepSeek `deepseek-flash` and none of this session's code is running.
+
+**After the restart, check these four things.**
+1. `/faction contract` → Gilbert answers *in the Cline model* and, when the
+   message mentions game mechanics, the log shows one Tavily lookup. A reply that
+   says "my line to the records has gone down" is a provider failure: the log now
+   carries a `[hint: …]` naming the cause.
+2. The daily guide (run-on-start writes `daily_guide.md`): expect ~20k+
+   characters, nine sections, an FAQ, and Union dues stated as **1.75%/2%** — not
+   50%.
+3. `daily_guide.md` mtime and `turso-tmp/last_sync.json` should both refresh.
+4. `/payout cash` still reports the 5% individual tax and Union dues; no money
+   code changed this session.
+
+**Deliberately left alone.** The Forge mod is still a README only, and
+`POST /api/preview` still does not exist (README section 9, items 1 and 10). The
+old DeepSeek key remains in `.env` as `AI_*` for a one-line rollback.
 
 ### 2026-11-06 — Personas and guide move to cline-pass models (uploaded; **restart required**)
 

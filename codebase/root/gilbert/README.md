@@ -5,7 +5,8 @@ Workers' Union contracts in Discord.
 
 | File | Responsibility |
 |---|---|
-| `ai.py` | Thin async client for an OpenAI-compatible chat-completions API |
+| `ai.py` | Thin async client for an OpenAI-compatible chat-completions API (both reply shapes, per-instance overrides, failure hints) |
+| `lookup.py` | Tavily lookup for Minecraft/Forge facts: keyword-triggered, cached, never fatal |
 | `prompt.py` | System prompt, funding tiers and per-contract grounding context |
 | `__init__.py` | Public exports |
 
@@ -19,9 +20,17 @@ Workers' Union contracts in Discord.
    treasury balance, soldiers, quota, treasury funds and status — plus the
    Union contributions for a member. It is attached before the first reply, so
    Gilbert never has to ask for a number the bot already holds.
-3. The block is appended to `GILBERT_SYSTEM_PROMPT`.
-4. `GilbertAI.complete(messages)` posts to `{AI_API_URL}/chat/completions`.
-5. The reply is stored back into `contracts.history` (trimmed to
+3. The block is appended to `GILBERT_SYSTEM_PROMPT`, and **a second system
+   message always carries the pinned server build**
+   (`lookup.platform_block()` → "Minecraft Java 1.20.1 on Forge 47.x, not
+   NeoForge"). The personas are forbidden from quoting 1.21+ or NeoForge
+   mechanics.
+4. If the player's message leans on game mechanics, `lookup.lookup_for()` may
+   attach a third system message with live web results (see below).
+5. `GilbertAI.complete(messages)` posts to `{CHATBOT_API_URL}/chat/completions`.
+6. The reply is read with `ai.reply_text()` — which accepts both
+   `{"choices": …}` and the Cline gateway's `{"data": {"choices": …}}` — then
+   stored back into `contracts.history` (trimmed to
    `config.CONTRACT_HISTORY_LIMIT` messages) and posted in the thread.
 
 Contracts open directly from `/faction contract faction:union`: there is **no
@@ -30,7 +39,10 @@ dice roll and no membership requirement**. The same engine serves The Crown
 treasury as the payer.
 
 If the AI call fails or no key is configured, Gilbert falls back to a short
-in-character "my line's gone dead" message. The negotiation stays usable.
+in-character "my line's gone dead" message. The negotiation stays usable. The
+log line for that failure now carries a `[hint: …]` from `provider_hint()`, so
+"out of credit", "wrong model id", "rate limited" and "the model spent its whole
+token budget thinking" are distinguishable at a glance.
 
 `/faction contract faction:union` is the only contract/representative entry
 point; the audience path has been removed. The request opens the negotiation
@@ -40,23 +52,75 @@ helpers remain only for historical data.
 
 ---
 
+## Live Minecraft lookups
+
+`lookup.py` exists because both personas quote game mechanics and their training
+data goes stale while the server is pinned to 1.20.1.
+
+* `needs_lookup(text)` is a **pure keyword test** (blocks, items, farms,
+  redstone, villagers, versions, Forge…, or an explicit "look it up"). Ordinary
+  haggling never pays a search, so a long negotiation costs nothing extra.
+* The query is version-scoped: `Minecraft 1.20.1 Forge 47.x: <player's words>`.
+* Bounded: 4 results, 2,200 characters, 12 s (`LOOKUP_*` env), cached 15 minutes,
+  so a repeated question in one thread is free.
+* The block is `PINNED SERVER BUILD` + `LIVE WEB RESULTS`, and it is explicitly
+  **subordinate to the Union/Crown rules** — a search result can never change a
+  price, quota or treasury figure.
+* Any failure (no key, timeout, bad payload) returns `None` and the negotiation
+  continues. **A lookup must never be able to drop a reply.**
+* Only the player's own words leave the process: no balances, case IDs or ledger
+  rows are ever sent to the search provider.
+
+---
+
 ## Model configuration
 
-All settings are environment variables:
+The chat-bot config is read first; the legacy `AI_*` names still work as a
+fallback when the matching `CHATBOT_*` value is blank.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `AI_API_KEY` | empty | Enables the client; empty means fallback replies |
-| `AI_API_URL` | `https://api.deepseek.com` | Base URL, no trailing slash needed |
-| `AI_MODEL` | `deepseek-chat` | Model name |
-| `AI_TIMEOUT` | `60` | Seconds |
-| `AI_TEMPERATURE` | `0.6` | Sampling temperature |
-| `AI_MAX_TOKENS` | `900` | Reply cap |
+| Variable (`CHATBOT_…`) | Legacy alias | Default | Purpose |
+|---|---|---|---|
+| `API_KEY` | `AI_API_KEY` | empty | Enables the client; empty means fallback replies |
+| `API_URL` | `AI_API_URL` | `https://api.deepseek.com` | Base URL, no trailing slash needed |
+| `MODEL` | `AI_MODEL` | `deepseek-chat` | Model name |
+| `TIMEOUT` | `AI_TIMEOUT` | `60` | Seconds |
+| `TEMPERATURE` | `AI_TEMPERATURE` | `0.6` | Sampling temperature |
+| `MAX_TOKENS` | `AI_MAX_TOKENS` | `900` | Reply cap — **must cover reasoning too** |
 
 Any OpenAI-compatible endpoint works: OpenAI, Azure OpenAI, OpenRouter, Ollama,
-LM Studio or vLLM. For DeepSeek use `AI_MODEL=deepseek-chat`; the old
-`deepseek-flash` value is mapped to it automatically. An HTTP 401 means the
-`AI_API_KEY` itself is invalid or revoked, not that the persona is broken.
+LM Studio, vLLM, or the Cline gateway (`https://api.cline.bot/api/v1`).
+`GilbertAI()` also takes `model=` / `temperature=` / `max_tokens=` / `timeout=`
+overrides, which is how `DailySync` runs the guide on a different model from the
+same key (`DAILY_GUIDE_MODEL`, `DAILY_GUIDE_TEMPERATURE`,
+`DAILY_GUIDE_MAX_TOKENS`).
+
+**Live choice (2026-11-06):** personas on
+`cline-pass/deepseek-v4.1-flash-1017` (0.75, 16,000, 240 s) because a player is
+watching and it answers in ~8 s; the guide on `cline-pass/deepseek-v4-pro`
+(0.25, 16,000) because it runs once a day and produced the most complete
+document. Measured alternatives: `muse-spark-1.3-contributor` (14 s, best
+alternative voice), `kimi-k3.1-pro` (31 s, crispest), `deepseek-v4-pro` (27 s).
+`cline-pass/deepseek-v4.1-pro` does not exist — the alias is
+`cline-pass/deepseek-v4-pro`.
+
+### Two traps worth knowing
+
+* **Gateway envelope.** The Cline gateway returns
+  `{"data": {"choices": [...]}}`, not the bare OpenAI body. `ai.reply_text()`
+  accepts both, plus list-form `content` and the legacy `choices[0]["text"]`.
+  Read a reply through it; never index `payload["choices"]` directly, or every
+  reply from that provider parses as empty and the persona silently falls back.
+* **Reasoning burns the budget.** The cline-pass models are reasoning models:
+  the answer arrives after the thinking and `max_tokens` pays for both. At
+  2,000–4,000 tokens several returned `HTTP 500 {"error":"empty response
+  content"}` with **no text at all**. Keep 16,000. `provider_hint()` turns that
+  body into `[hint: … raise CHATBOT_MAX_TOKENS/DAILY_GUIDE_MAX_TOKENS]`, and it
+  does the same for 401 (key), 402 (credit), 404 (model id) and 429 (rate).
+
+For DeepSeek use `AI_MODEL=deepseek-chat`; the old `deepseek-flash` value is
+mapped to it automatically, but only when the base URL is `api.deepseek.com`.
+An HTTP 401 means the key itself is invalid or revoked, not that the persona is
+broken.
 
 ---
 
