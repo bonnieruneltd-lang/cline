@@ -1302,6 +1302,14 @@ longer exists, not a lost account.
 results, and `needs_lookup()` triggers on a Forge/netherite sentence. The
 lookup stays best-effort: it still returns `[]` rather than raising on failure.
 
+**The live app is on this build.** The guild command tree registered on
+Discord is **114 nodes** (23 top-level commands, the rest subcommands and the
+`/faction`, `/contract`, `/shop`, `/payout` groups), counted from
+`GET /applications/{id}/guilds/{id}/commands` — exactly the surface
+`checks/check_cogs.py` pins, with `/slots`, `/roulette` and `/give` present and
+no retired name (`crown`, `union`, `audience`, `contract request`) back. So the
+running process is on this build, not an older upload.
+
 **Uploaded.** `README.md`, `AGENTS.md`, `BUG-FIXES.md`, plus the new
 `README-optimized.md`, `AGENTS-optimized.md` and `BUG-FIXES-optimized.md`, each
 with a `.bak-20261106-203220` copy taken from the live original first and a

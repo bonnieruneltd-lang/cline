@@ -146,6 +146,12 @@ The live Tavily key was exercised through `gilbert/lookup.py` (never a raw HTTP
 call): `needs_lookup()` triggers and `search()` returns results, and it stays
 best-effort (`[]` on failure, never an exception into a reply).
 
+The guild command tree registered on Discord is **114 nodes** (23 top-level,
+the rest subcommands and groups) — read back from
+`GET /applications/{id}/guilds/{id}/commands`, so the running process is on this
+build rather than an older upload. The `TAVILY_API_KEY` and `LOOKUP_*` lines are
+already in the live `.env`; set them there, never in this checkout.
+
 Deploy-script artifact to ignore: the root files `.bak-20261106-172901`,
 `-172912` and `-173008` (85,251 bytes each) are `BUG-FIXES.md` copies whose
 basename was dropped in the 17:29 session. Left in place, not pruned.
