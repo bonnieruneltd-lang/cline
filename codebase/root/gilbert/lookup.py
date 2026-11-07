@@ -221,15 +221,20 @@ async def search(
     }
     try:
         client_timeout = aiohttp.ClientTimeout(total=timeout)
-        async with aiohttp.ClientSession(timeout=client_timeout) as session:
-            async with session.post(ENDPOINT, json=payload) as response:
-                if response.status != 200:
-                    body = (await response.text())[:200]
-                    logger.warning(
-                        "Web lookup returned HTTP %s: %s", response.status, body
-                    )
-                    return []
-                data = await response.json()
+        # Reuse the shared pooled session so a reply-heavy evening does not open
+        # (and discard) one connector per lookup.
+        from gilbert.ai import shared_session
+
+        async with shared_session().post(
+            ENDPOINT, json=payload, timeout=client_timeout
+        ) as response:
+            if response.status != 200:
+                body = (await response.text())[:200]
+                logger.warning(
+                    "Web lookup returned HTTP %s: %s", response.status, body
+                )
+                return []
+            data = await response.json()
     except Exception as exc:  # pragma: no cover - network dependent
         logger.warning("Web lookup failed: %s", exc)
         return []

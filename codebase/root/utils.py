@@ -7,13 +7,48 @@ and permission checks.
 
 from __future__ import annotations
 
-from typing import Optional
+import time
+from typing import Any, Awaitable, Callable, Optional
 
 import discord
 from discord import app_commands
 
 import account_transfers
 import config
+
+
+# ---------------------------------------------------------------------------
+# Autocomplete snapshot cache
+# ---------------------------------------------------------------------------
+# Discord fires an autocomplete request on every keystroke. Without a cache a
+# busy server re-reads (and re-sorts) the whole nation/kingdom/individual table
+# for every character every user types. The cache is deliberately short-lived
+# and scoped to autocomplete only: a two-second-stale dropdown is harmless,
+# while a stale balance used by an economy command would not be. Writes are
+# never served from here.
+AUTOCOMPLETE_CACHE_SECONDS = 3.0
+_CACHE_LIMIT = 512
+_SNAPSHOT: dict[tuple[Any, ...], tuple[float, Any]] = {}
+
+
+async def autocomplete_snapshot(key: tuple[Any, ...], fetch: Callable[[], Awaitable[Any]]) -> Any:
+    """Return a short-lived cached copy of ``fetch()`` for autocomplete rows."""
+    now = time.monotonic()
+    hit = _SNAPSHOT.get(key)
+    if hit is not None and now - hit[0] < AUTOCOMPLETE_CACHE_SECONDS:
+        return hit[1]
+    value = await fetch()
+    if len(_SNAPSHOT) >= _CACHE_LIMIT:
+        # Drop the oldest entry; a dict keeps insertion order.
+        _SNAPSHOT.pop(next(iter(_SNAPSHOT)), None)
+    _SNAPSHOT[key] = (now, value)
+    return value
+
+
+def clear_autocomplete_cache() -> None:
+    """Drop every cached autocomplete snapshot (used by the checks)."""
+    _SNAPSHOT.clear()
+
 
 
 # ---------------------------------------------------------------------------
@@ -100,11 +135,17 @@ async def account_autocomplete(
     current_l = current.lower()
     choices: list[app_commands.Choice[str]] = []
 
-    for n in await db.list_nations(interaction.guild_id):
+    for n in await autocomplete_snapshot(
+        ("nations", interaction.guild_id),
+        lambda: db.list_nations(interaction.guild_id),
+    ):
         label = f"🏛️ Nation · {n['name']}"
         if current_l in label.lower():
             choices.append(app_commands.Choice(name=label[:100], value=encode_account("nation", n["name"])))
-    for k in await db.list_kingdoms(interaction.guild_id):
+    for k in await autocomplete_snapshot(
+        ("kingdoms", interaction.guild_id),
+        lambda: db.list_kingdoms(interaction.guild_id),
+    ):
         label = f"👑 Kingdom · {k['name']}"
         if current_l in label.lower():
             choices.append(app_commands.Choice(name=label[:100], value=encode_account("kingdom", k["name"])))
@@ -126,7 +167,10 @@ async def any_account_autocomplete(
     current_l = current.lower()
     choices: list[app_commands.Choice[str]] = []
 
-    for n in await db.list_nations(interaction.guild_id):
+    for n in await autocomplete_snapshot(
+        ("nations", interaction.guild_id),
+        lambda: db.list_nations(interaction.guild_id),
+    ):
         label = f"🏛️ Nation · {n['name']}"
         if current_l in label.lower():
             choices.append(
@@ -137,7 +181,10 @@ async def any_account_autocomplete(
                     ),
                 )
             )
-    for k in await db.list_kingdoms(interaction.guild_id):
+    for k in await autocomplete_snapshot(
+        ("kingdoms", interaction.guild_id),
+        lambda: db.list_kingdoms(interaction.guild_id),
+    ):
         label = f"👑 Kingdom · {k['name']}"
         if current_l in label.lower():
             choices.append(
@@ -148,7 +195,10 @@ async def any_account_autocomplete(
                     ),
                 )
             )
-    for row in await db.list_individuals(interaction.guild_id):
+    for row in await autocomplete_snapshot(
+        ("individuals", interaction.guild_id),
+        lambda: db.list_individuals(interaction.guild_id),
+    ):
         name = row["display_name"] or f"Member {row['discord_id']}"
         label = f"👤 {name}"
         if current_l in label.lower() or str(row["discord_id"]) in current:
@@ -171,7 +221,10 @@ async def nation_autocomplete(
         return []
     current_l = current.lower()
     out = []
-    for n in await db.list_nations(interaction.guild_id):
+    for n in await autocomplete_snapshot(
+        ("nations", interaction.guild_id),
+        lambda: db.list_nations(interaction.guild_id),
+    ):
         if current_l in n["name"].lower():
             out.append(app_commands.Choice(name=n["name"][:100], value=n["name"]))
     return out[:25]
@@ -185,7 +238,10 @@ async def kingdom_autocomplete(
         return []
     current_l = current.lower()
     out = []
-    for k in await db.list_kingdoms(interaction.guild_id):
+    for k in await autocomplete_snapshot(
+        ("kingdoms", interaction.guild_id),
+        lambda: db.list_kingdoms(interaction.guild_id),
+    ):
         if current_l in k["name"].lower():
             out.append(app_commands.Choice(name=k["name"][:100], value=k["name"]))
     return out[:25]

@@ -12,6 +12,7 @@ Format per entry: Symptom / Cause / Impact / Fix / Test (symbol names to grep fo
 | Area | Defect | Fix | Check |
 |------|--------|-----|-------|
 | Money core | Transaction rollback, debit guard, transfer atomicity, `setbalance` fresh-delta atomicity, ledger reconciliation | Atomic transactions + guards | `check_transactions.py`, `check_database.py`, `check_full_transfers.py` |
+| Load / concurrency | One connection + one lock serialised every read behind the writer; two admins could overflow a six-nation kingdom | WAL `query_only` read pool (writer stays single), shared+bounded AI client, 3s autocomplete cache, atomic `assign_nation_to_kingdom()` | `check_load.py`, `check_database.py` |
 | Contracts | Leverage ladder, claim idempotency, double click, concurrent claim, 75%-until-release, closed contract, legacy refund, atomic quota, global case IDs, approval re-read, short treasury | Status flip + funding in one transaction; quota inside insert | `check_contracts.py` |
 | Draws | Approval race, ex-member re-check, one-shot status | Re-read under lock; status guard | `check_bank.py` |
 | Shop | Pricing maths, member vs non-member, mixed cart, shulker fee, double redemption | Atomic checkout + redeem | `check_shop.py` |
@@ -36,8 +37,7 @@ Format per entry: Symptom / Cause / Impact / Fix / Test (symbol names to grep fo
 3. The v1 API has one static bearer token (single trusted consumer; rotation is manual).
 4. `_is_contract_space()` treats any channel starting with `union-contract-` as a contract space (only reachable by manual channel rename; harmless).
 5. `/casino withdraw` can strand an open hand's stake (withdraw checks current house balance, not worst-case reserve of open blackjack/poker hands).
-6. Six-nation kingdom cap is not transactional (two simultaneous `/kingdom addnation` calls can both see five and leave seven; admin-only, low-frequency).
-7. Account name uniqueness is case-sensitive in SQLite but case-insensitive in queries (`UNIQUE` allows `Foo`+`foo` side by side; `COLLATE NOCASE` lookups return one; needs two near-simultaneous requests to collide).
-8. The Turso mirror is append-only: deleted-member ledger rows survive remotely (681 local vs 685 mirrored). Owner decision needed — mirror the erasure or document as append-only archive. **Do not pick silently.**
-9. Deployment backups are never pruned (559 on host); keep 3 newest per file plus the live build's backups. Prune only on explicit decision.
-10. Checks are not run automatically (nothing invokes them at boot or on a schedule; regression caught only when someone runs `run_all.py`).
+6. Account name uniqueness is case-sensitive in SQLite but case-insensitive in queries (`UNIQUE` allows `Foo`+`foo` side by side; `COLLATE NOCASE` lookups return one; needs two near-simultaneous requests to collide).
+7. The Turso mirror is append-only: deleted-member ledger rows survive remotely (681 local vs 685 mirrored). Owner decision needed — mirror the erasure or document as append-only archive. **Do not pick silently.**
+8. Deployment backups are never pruned (559 on host); keep 3 newest per file plus the live build's backups. Prune only on explicit decision.
+9. Checks are not run automatically (nothing invokes them at boot or on a schedule; regression caught only when someone runs `run_all.py`).

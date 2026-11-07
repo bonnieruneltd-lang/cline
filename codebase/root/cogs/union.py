@@ -671,7 +671,7 @@ class Union(commands.Cog):
             return await interaction.response.send_message(
                 embed=embeds.error("Guild Only", "The Union only runs inside a server."), ephemeral=True
             )
-        rows = await self.db.list_union_members(interaction.guild_id)
+        rows = await self.db.list_union_member_accounts(interaction.guild_id)
         if not rows:
             return await interaction.response.send_message(
                 embed=embeds.info("No Members", "No nation or kingdom has joined the Union yet."),
@@ -679,14 +679,10 @@ class Union(commands.Cog):
             )
         lines = []
         for r in rows:
-            if r["account_type"] == "nation":
-                account = await self.db.get_nation_by_id(r["account_id"])
-            else:
-                account = await self.db.get_kingdom_by_id(r["account_id"])
-            if account is None:
+            if r["name"] is None:
                 continue
             lines.append(
-                f"{account_emoji(r['account_type'])} **{account['name']}** · "
+                f"{account_emoji(r['account_type'])} **{r['name']}** · "
                 f"{account_type_label(r['account_type'])} · joined {r['joined_at'][:10]}"
             )
         if not lines:

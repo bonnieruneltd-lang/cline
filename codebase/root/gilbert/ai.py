@@ -16,12 +16,110 @@ still read as a fallback so an existing ``.env`` keeps working during migration.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 
 import aiohttp
 
 logger = logging.getLogger("royalcourt.gilbert")
+
+# ---------------------------------------------------------------------------
+# Shared HTTP client
+# ---------------------------------------------------------------------------
+# A new ``aiohttp.ClientSession`` per reply meant a fresh connector and TCP/TLS
+# handshake for every Gilbert or Albert turn. During a negotiation burst (dozens
+# of threads talking at once) that churns sockets and file descriptors. One
+# session per event loop is reused for every call and closed on shutdown.
+#
+# The sessions/semaphores are keyed by loop id instead of held in a module
+# global so two ``asyncio.run`` cycles in one process (the checks do this) never
+# share a loop-bound object.
+_SESSIONS: dict[int, aiohttp.ClientSession] = {}
+_SEMAPHORES: dict[int, asyncio.Semaphore] = {}
+
+# Cap simultaneous provider calls. The provider rate-limits anyway; queueing
+# here keeps a 20-thread burst from opening 20 sockets and getting 429s.
+DEFAULT_MAX_CONCURRENCY = 8
+MAX_MAX_CONCURRENCY = 64
+# Statuses worth one more try. 429 is the rate limiter, 5xx is transient.
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+RETRY_BASE_SECONDS = 0.75
+RETRY_MAX_SECONDS = 5.0
+
+
+def _env_int(name: str, default: int, low: int, high: int) -> int:
+    try:
+        value = int((os.getenv(name) or "").strip() or default)
+    except ValueError:
+        value = default
+    return max(low, min(value, high))
+
+
+def _max_concurrency() -> int:
+    return _env_int(
+        "CHATBOT_MAX_CONCURRENCY", DEFAULT_MAX_CONCURRENCY, 1, MAX_MAX_CONCURRENCY
+    )
+
+
+def _max_attempts() -> int:
+    # One first try plus ``CHATBOT_RETRIES`` retries.
+    return 1 + _env_int("CHATBOT_RETRIES", 2, 0, 4)
+
+
+def _session() -> aiohttp.ClientSession:
+    """The process' shared client for the running loop (created on first use)."""
+    key = id(asyncio.get_running_loop())
+    session = _SESSIONS.get(key)
+    if session is None or session.closed:
+        session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(
+                limit=32, limit_per_host=16, ttl_dns_cache=300
+            )
+        )
+        _SESSIONS[key] = session
+    return session
+
+
+def _semaphore() -> asyncio.Semaphore:
+    key = id(asyncio.get_running_loop())
+    sem = _SEMAPHORES.get(key)
+    if sem is None:
+        sem = asyncio.Semaphore(_max_concurrency())
+        _SEMAPHORES[key] = sem
+    return sem
+
+
+def shared_session() -> aiohttp.ClientSession:
+    """Public accessor for the shared client (the Tavily lookup reuses it)."""
+    return _session()
+
+
+async def close_shared_sessions() -> None:
+    """Close every shared client. Called from ``RoyalCourt.close``."""
+    sessions = list(_SESSIONS.values())
+    _SESSIONS.clear()
+    _SEMAPHORES.clear()
+    for session in sessions:
+        try:
+            if not session.closed:
+                await session.close()
+        except Exception:  # pragma: no cover - shutdown best effort
+            pass
+
+
+def _retry_delay(response: aiohttp.ClientResponse | None, attempt: int) -> float:
+    """Retry-After when the provider sent one, else exponential backoff."""
+    if response is not None:
+        header = (response.headers.get("Retry-After") or "").strip()
+        if header:
+            try:
+                return min(max(float(header), 0.0), RETRY_MAX_SECONDS)
+            except ValueError:
+                pass
+    return min(RETRY_BASE_SECONDS * (2 ** attempt), RETRY_MAX_SECONDS)
+
 
 _DEFAULT_MODEL = "deepseek-chat"
 # Legacy deployments used "deepseek-flash". The current endpoint accepts it, but
@@ -187,33 +285,65 @@ class GilbertAI:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        timeout = aiohttp.ClientTimeout(total=self.timeout)
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    f"{self.base_url}/chat/completions", json=payload, headers=headers
-                ) as resp:
-                    if resp.status != 200:
+        url = f"{self.base_url}/chat/completions"
+        attempts = _max_attempts()
+        # One overall budget: a retry only happens when the first try failed
+        # quickly (429/5xx). A request that burns the whole timeout is not
+        # repeated, which keeps the daily guide from doubling a long call.
+        deadline = time.monotonic() + self.timeout
+
+        # Queue behind the shared cap: the provider is the bottleneck, and
+        # firing 20 requests at once only converts them into 429s.
+        async with _semaphore():
+            for attempt in range(attempts):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                timeout = aiohttp.ClientTimeout(total=min(self.timeout, remaining))
+                try:
+                    async with _session().post(
+                        url, json=payload, headers=headers, timeout=timeout
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            content = reply_text(data)
+                            if content is None:
+                                logger.error(
+                                    "Gilbert AI returned no message text (model=%s, keys=%s)",
+                                    self.model,
+                                    sorted(data)[:6]
+                                    if isinstance(data, dict)
+                                    else type(data).__name__,
+                                )
+                            return content
                         body = (await resp.text())[:300]
                         hint = provider_hint(resp.status, body)
                         logger.error(
-                            "Gilbert AI returned HTTP %s (model=%s, url=%s/chat/completions): %s%s",
+                            "Gilbert AI returned HTTP %s (model=%s, url=%s): %s%s",
                             resp.status,
                             self.model,
-                            self.base_url,
+                            url,
                             body,
                             f" [hint: {hint}]" if hint else "",
                         )
+                        if resp.status not in RETRY_STATUSES or attempt + 1 >= attempts:
+                            return None
+                        delay = _retry_delay(resp, attempt)
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    logger.warning(
+                        "Gilbert AI request failed (attempt %s/%s): %s",
+                        attempt + 1,
+                        attempts,
+                        exc,
+                    )
+                    if attempt + 1 >= attempts:
+                        logger.exception("Gilbert AI request failed: %s", exc)
                         return None
-                    data = await resp.json()
-            content = reply_text(data)
-            if content is None:
-                logger.error(
-                    "Gilbert AI returned no message text (model=%s, keys=%s)",
-                    self.model,
-                    sorted(data)[:6] if isinstance(data, dict) else type(data).__name__,
-                )
-            return content
-        except Exception as exc:  # pragma: no cover - network dependent
-            logger.exception("Gilbert AI request failed: %s", exc)
+                    delay = _retry_delay(None, attempt)
+                except Exception as exc:  # pragma: no cover - unexpected shape
+                    logger.exception("Gilbert AI request failed: %s", exc)
+                    return None
+                # Back off, but never past the overall budget.
+                await asyncio.sleep(max(0.0, min(delay, deadline - time.monotonic())))
             return None
+

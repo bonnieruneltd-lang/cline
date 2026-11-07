@@ -16,10 +16,17 @@ poker_hands    : a held poker buy-in, closeable at startup to refund
 
 Design notes
 ------------
-* The connection runs in SQLite **autocommit** mode (``isolation_level=None``).
-  Multi-statement money movements are wrapped in an explicit ``BEGIN IMMEDIATE``
-  transaction via :meth:`Database.transaction` so a crash mid-transfer can never
-  leave the ledger half-applied.
+* Writes run on **one** connection in SQLite **autocommit** mode
+  (``isolation_level=None``). Multi-statement money movements are wrapped in an
+  explicit ``BEGIN IMMEDIATE`` transaction via :meth:`Database.transaction` so a
+  crash mid-transfer can never leave the ledger half-applied. SQLite allows a
+  single writer, so keeping exactly one write connection is what makes the
+  accounting safe under load.
+* Reads run on a small pool of **query-only** WAL connections
+  (:data:`DEFAULT_READ_POOL_SIZE`). A reader sees the last committed snapshot
+  even while a transaction is open, so ordinary lookups no longer queue behind
+  a payout or a casino settlement. Reads *inside* a transaction stay on the
+  writer so they observe that transaction's own uncommitted rows.
 * :meth:`Database.migrate` adds columns that may be missing on databases created
   by older versions of the bot (``CREATE TABLE IF NOT EXISTS`` cannot add columns).
 """
@@ -28,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import os
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, AsyncIterator, Optional, Sequence
@@ -37,6 +45,48 @@ import aiosqlite
 import config
 
 ISO = "%Y-%m-%dT%H:%M:%S"
+
+# ---------------------------------------------------------------------------
+# Connection tuning
+# ---------------------------------------------------------------------------
+# WAL is what makes a read pool possible: a reader connection sees the last
+# committed snapshot while the single writer holds ``BEGIN IMMEDIATE``, so a
+# hundred people running ``/balance`` no longer queue behind one ``/coinflip``
+# settlement. The writer keeps the durable settings; readers are ``query_only``
+# so a stray write can never slip through a read helper.
+WRITER_PRAGMAS = (
+    "PRAGMA journal_mode = WAL",
+    "PRAGMA busy_timeout = 10000",
+    "PRAGMA synchronous = NORMAL",
+    "PRAGMA foreign_keys = ON",
+    "PRAGMA cache_size = -16000",      # 16 MiB page cache on the writer
+    "PRAGMA temp_store = MEMORY",
+    "PRAGMA mmap_size = 67108864",     # 64 MiB memory map
+    "PRAGMA wal_autocheckpoint = 1000",
+)
+
+READER_PRAGMAS = (
+    "PRAGMA busy_timeout = 10000",
+    "PRAGMA query_only = ON",
+    "PRAGMA temp_store = MEMORY",
+    "PRAGMA mmap_size = 67108864",
+    "PRAGMA cache_size = -8000",       # 8 MiB page cache per reader
+)
+
+# How many independent read connections to keep. Reads dominate a Discord
+# economy (autocomplete, balances, leaderboards, contract boards); four readers
+# plus the writer keeps a busy evening responsive without opening a connection
+# per command. Clamped so a bad env value cannot exhaust the process.
+DEFAULT_READ_POOL_SIZE = 4
+MAX_READ_POOL_SIZE = 16
+
+
+def _read_pool_size() -> int:
+    try:
+        size = int(os.getenv("DB_READ_POOL_SIZE", "").strip() or DEFAULT_READ_POOL_SIZE)
+    except ValueError:
+        size = DEFAULT_READ_POOL_SIZE
+    return max(1, min(size, MAX_READ_POOL_SIZE))
 
 
 class InsufficientFunds(Exception):
@@ -602,6 +652,11 @@ class Database:
     def __init__(self, path: str = "royal_bank.db") -> None:
         self.path = path
         self.conn: Optional[aiosqlite.Connection] = None
+        # Read pool: query-only WAL connections handed out one per lookup. The
+        # queue is created in ``connect()`` because it needs a running loop.
+        self._read_pool: Optional[asyncio.Queue] = None
+        self._read_conns: list[aiosqlite.Connection] = []
+        self.read_pool_size = _read_pool_size()
         # Depth and owner are per asyncio task, not per process. A process-wide
         # counter let one task's ``async with db.transaction()`` join another
         # task's open transaction, so its work was committed (or rolled back)
@@ -627,13 +682,27 @@ class Database:
         self.conn = await aiosqlite.connect(self.path, isolation_level=None)
         self.conn.row_factory = aiosqlite.Row
         self._tx_lock = asyncio.Lock()
-        await self.conn.execute("PRAGMA foreign_keys = ON")
-        await self.conn.execute("PRAGMA journal_mode = WAL")
-        await self.conn.execute("PRAGMA busy_timeout = 5000")
-        await self.conn.execute("PRAGMA synchronous = NORMAL")
+        for pragma in WRITER_PRAGMAS:
+            await self.conn.execute(pragma)
+
+        # Schema first: a reader opened before the tables exist would fail its
+        # first query on a fresh database.
         await self.conn.executescript(SCHEMA)
         await self.migrate()
         await self.conn.commit()
+
+        # Then the reader pool. WAL is already set by the writer line above, so
+        # these connections inherit the mode; they only need query-only and the
+        # same cache/timeout settings.
+        pool: asyncio.Queue = asyncio.Queue(maxsize=self.read_pool_size)
+        for _ in range(self.read_pool_size):
+            reader = await aiosqlite.connect(self.path, isolation_level=None)
+            reader.row_factory = aiosqlite.Row
+            for pragma in READER_PRAGMAS:
+                await reader.execute(pragma)
+            self._read_conns.append(reader)
+            pool.put_nowait(reader)
+        self._read_pool = pool
 
     async def migrate(self) -> None:
         """Add any columns missing from databases created by older versions."""
@@ -680,9 +749,34 @@ class Database:
         )
 
     async def close(self) -> None:
+        # Drain and close the readers first; the writer must be last so no
+        # in-flight read is torn down mid-statement.
+        self._read_pool = None
+        for reader in self._read_conns:
+            try:
+                await reader.close()
+            except Exception:  # pragma: no cover - shutdown best effort
+                pass
+        self._read_conns.clear()
         if self.conn is not None:
             await self.conn.close()
             self.conn = None
+
+    # -- read pool ---------------------------------------------------------
+    @asynccontextmanager
+    async def _reader(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Borrow one query-only read connection for the duration of a lookup.
+
+        The queue caps concurrency at ``read_pool_size``; a burst of reads
+        waits for a free reader instead of opening a connection per command.
+        """
+        pool = self._read_pool
+        assert pool is not None, "Database not connected"
+        reader = await pool.get()
+        try:
+            yield reader
+        finally:
+            pool.put_nowait(reader)
 
     # -- transactions ------------------------------------------------------
     @asynccontextmanager
@@ -760,12 +854,18 @@ class Database:
             row = await cur.fetchone()
             await cur.close()
             return row
-        assert self._tx_lock is not None, "Database not connected"
-        async with self._tx_lock:
-            cur = await self.conn.execute(sql, params)
-            row = await cur.fetchone()
-            await cur.close()
-            return row
+        if self._read_pool is not None:
+            # Autocommit read on a WAL snapshot: no writer lock, so it never
+            # waits behind an open money transaction.
+            async with self._reader() as reader:
+                cur = await reader.execute(sql, params)
+                row = await cur.fetchone()
+                await cur.close()
+                return row
+        cur = await self.conn.execute(sql, params)
+        row = await cur.fetchone()
+        await cur.close()
+        return row
 
     async def fetchall(self, sql: str, params: Sequence[Any] = ()) -> list[aiosqlite.Row]:
         assert self.conn is not None, "Database not connected"
@@ -774,12 +874,16 @@ class Database:
             rows = await cur.fetchall()
             await cur.close()
             return list(rows)
-        assert self._tx_lock is not None, "Database not connected"
-        async with self._tx_lock:
-            cur = await self.conn.execute(sql, params)
-            rows = await cur.fetchall()
-            await cur.close()
-            return list(rows)
+        if self._read_pool is not None:
+            async with self._reader() as reader:
+                cur = await reader.execute(sql, params)
+                rows = await cur.fetchall()
+                await cur.close()
+                return list(rows)
+        cur = await self.conn.execute(sql, params)
+        rows = await cur.fetchall()
+        await cur.close()
+        return list(rows)
 
     # -- nations -----------------------------------------------------------
     async def create_nation(self, guild_id: int, name: str, leader_id: Optional[int]) -> int:
@@ -840,6 +944,73 @@ class Database:
 
     async def set_nation_kingdom(self, nation_id: int, kingdom_id: Optional[int]) -> None:
         await self.execute("UPDATE nations SET kingdom_id = ? WHERE id = ?", (kingdom_id, nation_id))
+
+    async def assign_nation_to_kingdom(
+        self,
+        guild_id: int,
+        nation_id: int,
+        kingdom_id: int,
+        *,
+        max_members: int,
+        actor_id: Optional[int] = None,
+        note: Optional[str] = None,
+    ) -> tuple[str, int, Optional[str], Optional[str], Optional[str]]:
+        """Atomically move a nation into a kingdom, enforcing the member cap.
+
+        Returns ``(status, members_after, kingdom_name, nation_name, previous)``
+        where ``status`` is ``ok``, ``already``, ``full`` or ``missing``.
+
+        The member count, the move and the audit row share one
+        ``BEGIN IMMEDIATE`` transaction. Two admins clicking "add nation" on the
+        last free slot at the same moment used to be able to leave a six-nation
+        kingdom holding seven; the guarded count closes that window.
+        """
+        async with self.transaction():
+            kingdom = await self.fetchone(
+                "SELECT id, name FROM kingdoms WHERE id = ? AND guild_id = ?",
+                (kingdom_id, guild_id),
+            )
+            nation = await self.fetchone(
+                "SELECT id, name, kingdom_id FROM nations WHERE id = ? AND guild_id = ?",
+                (nation_id, guild_id),
+            )
+            if kingdom is None or nation is None:
+                return "missing", 0, None, None, None
+
+            previous = None
+            if nation["kingdom_id"] == kingdom_id:
+                return "already", 0, kingdom["name"], nation["name"], None
+            if nation["kingdom_id"] is not None:
+                old = await self.fetchone(
+                    "SELECT name FROM kingdoms WHERE id = ?", (nation["kingdom_id"],)
+                )
+                previous = old["name"] if old else None
+
+            count_row = await self.fetchone(
+                "SELECT COUNT(*) AS c FROM nations WHERE kingdom_id = ?", (kingdom_id,)
+            )
+            members = int(count_row["c"]) if count_row else 0
+            if members >= max_members:
+                return "full", members, kingdom["name"], nation["name"], previous
+
+            await self.execute(
+                "UPDATE nations SET kingdom_id = ? WHERE id = ? AND guild_id = ?",
+                (kingdom_id, nation_id, guild_id),
+            )
+            await self.log_tx(
+                guild_id=guild_id,
+                kind="kingdom_addnation",
+                account_type="kingdom",
+                account_id=kingdom_id,
+                account_name=kingdom["name"],
+                counterparty_type="nation",
+                counterparty_id=nation_id,
+                counterparty_name=nation["name"],
+                actor_id=actor_id,
+                note=note or (f"Moved from {previous}" if previous else None),
+            )
+            return "ok", members + 1, kingdom["name"], nation["name"], previous
+
 
     async def delete_nation(self, nation_id: int) -> None:
         async with self.transaction():
@@ -2360,6 +2531,26 @@ class Database:
             """SELECT account_type, account_id, joined_at FROM faction_members
                WHERE guild_id = ? AND faction = 'union' AND status = 'active'
                ORDER BY account_type, account_id""",
+            (guild_id,),
+        )
+
+    async def list_union_member_accounts(self, guild_id: int) -> list[aiosqlite.Row]:
+        """Union members with their account name, in one query.
+
+        The members list used to look each nation and kingdom up individually,
+        one round trip per member. A join keeps a large Union's listing a single
+        read instead of ``N + 1`` reads on the pool.
+        """
+        return await self.fetchall(
+            """SELECT m.account_type,
+                      m.account_id,
+                      m.joined_at,
+                      COALESCE(n.name, k.name) AS name
+               FROM faction_members m
+               LEFT JOIN nations  n ON m.account_type = 'nation'  AND n.id = m.account_id
+               LEFT JOIN kingdoms k ON m.account_type = 'kingdom' AND k.id = m.account_id
+               WHERE m.guild_id = ? AND m.faction = 'union' AND m.status = 'active'
+               ORDER BY name COLLATE NOCASE, m.account_id""",
             (guild_id,),
         )
 

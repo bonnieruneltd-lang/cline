@@ -228,34 +228,48 @@ class Kingdom(commands.Cog):
                 ),
                 ephemeral=True,
             )
-        if nrow["kingdom_id"] is not None:
-            old = await self.db.get_kingdom_by_id(nrow["kingdom_id"])
-            old_name = old["name"] if old else "another kingdom"
-            await self.db.set_nation_kingdom(nrow["id"], krow["id"])
-            await self.db.log_tx(
-                guild_id=interaction.guild_id, kind="kingdom_addnation",
-                account_type="kingdom", account_id=krow["id"], account_name=krow["name"],
-                counterparty_type="nation", counterparty_id=nrow["id"], counterparty_name=nrow["name"],
-                actor_id=interaction.user.id, note=f"Moved from {old_name}",
+
+        # The pre-read above is feedback only. The cap and the write are checked
+        # together inside one transaction, so two admins adding the last two
+        # members at the same moment cannot leave seven in a six-nation kingdom.
+        status, members_after, kname, nname, previous = await self.db.assign_nation_to_kingdom(
+            interaction.guild_id,
+            nrow["id"],
+            krow["id"],
+            max_members=config.MAX_NATIONS_PER_KINGDOM,
+            actor_id=interaction.user.id,
+        )
+        if status == "missing":
+            return await interaction.response.send_message(
+                embed=embeds.error("Not Found", "That kingdom or nation no longer exists."),
+                ephemeral=True,
             )
+        if status == "already":
+            return await interaction.response.send_message(
+                embed=embeds.error("Already a Member", f"**{nname}** is already in **{kname}**."),
+                ephemeral=True,
+            )
+        if status == "full":
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "Kingdom Full",
+                    f"**{kname}** already has the maximum of "
+                    f"**{config.MAX_NATIONS_PER_KINGDOM}** member nations.",
+                ),
+                ephemeral=True,
+            )
+        if previous:
             return await interaction.response.send_message(
                 embed=embeds.success(
                     "Nation Reassigned",
-                    f"🏛️ **{nrow['name']}** moved from **{old_name}** to 👑 **{krow['name']}**.",
+                    f"🏛️ **{nname}** moved from **{previous}** to 👑 **{kname}**.",
                 )
             )
-        await self.db.set_nation_kingdom(nrow["id"], krow["id"])
-        await self.db.log_tx(
-            guild_id=interaction.guild_id, kind="kingdom_addnation",
-            account_type="kingdom", account_id=krow["id"], account_name=krow["name"],
-            counterparty_type="nation", counterparty_id=nrow["id"], counterparty_name=nrow["name"],
-            actor_id=interaction.user.id,
-        )
         await interaction.response.send_message(
             embed=embeds.success(
                 "Nation Joined",
-                f"🏛️ **{nrow['name']}** joined 👑 **{krow['name']}** "
-                f"({len(members) + 1}/{config.MAX_NATIONS_PER_KINGDOM}).",
+                f"🏛️ **{nname}** joined 👑 **{kname}** "
+                f"({members_after}/{config.MAX_NATIONS_PER_KINGDOM}).",
             )
         )
 

@@ -304,6 +304,12 @@ class RoyalCourt(commands.Bot):
         except Exception:  # pragma: no cover
             logger.exception("Error while stopping the daily sync.")
         try:
+            from gilbert.ai import close_shared_sessions
+
+            await close_shared_sessions()
+        except Exception:  # pragma: no cover
+            logger.exception("Error while closing the shared AI client.")
+        try:
             await self.db.close()
         except Exception:  # pragma: no cover
             logger.exception("Error while closing the database.")

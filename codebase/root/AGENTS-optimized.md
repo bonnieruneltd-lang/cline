@@ -1,8 +1,9 @@
 # Agent guide — optimized read-first version
 
-> **Current state (2026-11-06 close):** 115 commands / 16 cogs, all 22 checks
-> green, the tree on the host is byte-identical to this checkout, and the bot
-> is running this build (restarted 21:05 UTC). `/contract invite` is live.
+> **Current state (2026-11-07):** 115 commands / 16 cogs, all 23 checks green
+> on this checkout. Concurrency hardening (WAL read pool, shared AI client,
+> 3-second autocomplete cache, atomic kingdom cap) is **uploaded but needs a
+> panel restart** to run. `/contract invite` is live.
 
 This is a condensed, scannable summary of `AGENTS.md` (~84 lines against ~1,180).
 Read this first; the full `AGENTS.md` is the reference for everything below.
@@ -15,7 +16,7 @@ shop/kits, factions). Runs from the SFTP account `bl_7746.e75c1364` on
 ## Quick start
 ```
 python3 -m pip install -r requirements.txt   # discord.py, aiosqlite, python-dotenv, aiohttp
-python3 checks/run_all.py                    # whole suite: expect 22/22
+python3 checks/run_all.py                    # whole suite: expect 23/23
 python3 -m compileall -q .                   # syntax
 python3 -m pyflakes .                        # unused / undefined names
 ```

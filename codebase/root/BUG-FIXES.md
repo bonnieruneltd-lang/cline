@@ -26,6 +26,64 @@ Test:    the check that proves it (see "Verification" at the end).
 
 ---
 
+## Every read queued behind the one writer — 2026-11-07
+
+### One connection and one lock serialised the whole server
+
+**Symptom.** On a busy evening the bot felt sluggish exactly when several people
+used it at once: a `/balance`, a leaderboard refresh or an autocomplete dropdown
+could sit for the length of an unrelated payout or casino settlement. Nothing
+failed loudly; the interaction just arrived late, and at enough load Discord's
+three-second acknowledgement window becomes a real risk.
+
+**Cause.** `Database` held **one** `aiosqlite` connection and every helper
+(`execute`, `fetchone`, `fetchall`) took the same process-wide `_tx_lock`. A read
+therefore waited behind any open `BEGIN IMMEDIATE` money transaction, and behind
+every other read, even though SQLite's WAL mode supports concurrent readers. The
+lock was introduced for a real reason (an autocommit `conn.commit()` must never
+land inside another task's transaction), but it was protecting reads that do not
+need it.
+
+**Fix.**
+* `database.py` keeps the single **write** connection and its `_tx_lock` (SQLite
+  still permits one writer, and that is what makes the ledger safe), and adds a
+  pool of `DEFAULT_READ_POOL_SIZE` (4, `DB_READ_POOL_SIZE`) **`query_only` WAL
+  reader** connections. `fetchone`/`fetchall` borrow a reader when they are
+  outside a transaction; inside a transaction they stay on the writer so they
+  see that transaction's own uncommitted rows. `close()` drains readers first.
+* Writer/reader pragmas are now explicit and shared (`WRITER_PRAGMAS`,
+  `READER_PRAGMAS`): `journal_mode=WAL`, `busy_timeout=10000`,
+  `synchronous=NORMAL`, 16/8 MiB page caches, `temp_store=MEMORY`, a 64 MiB
+  mmap and `wal_autocheckpoint=1000`.
+* `gilbert/ai.py` reuses **one `aiohttp` session per event loop** instead of
+  opening a connector per reply, caps simultaneous provider calls
+  (`CHATBOT_MAX_CONCURRENCY`, default 8) and retries a 429/5xx once per
+  `Retry-After` (`CHATBOT_RETRIES`, default 2). `gilbert/lookup.py` reuses the
+  same session.
+* Autocomplete reads go through `utils.autocomplete_snapshot()`, a three-second
+  cache scoped to dropdowns only (never to balances or money decisions).
+* `/kingdom addnation`'s cap check and write became one transaction
+  (`Database.assign_nation_to_kingdom`), closing the documented seven-member
+  race and writing the audit row atomically with the move.
+
+**Impact.** Identity: no economy rule changed. Measured on this checkout with a
+payout-like writer (30 statements per transaction) and eight concurrent readers:
+the old one-lock path completed **192 reads** with **p50 5.25 ms / max 5.69 ms**
+because each read waited for the open transaction; the pool completed **4,913
+reads** with **p50 1.13 ms / max 2.91 ms**. Six concurrent add-nation attempts on
+the last free slot now yield exactly one winner and six members.
+
+**Test.** `checks/check_load.py` proves a read returns while a money transaction
+is still open (and sees the pre-commit snapshot), 120 concurrent credits lose
+nothing, 80 concurrent transfers never overdraw, a 280-operation read/write burst
+raises nothing, in-transaction reads see uncommitted rows, the kingdom cap holds
+under six simultaneous joins, the one-query Union listing, the autocomplete cache
+hits and expires, and the AI client is shared/closed, answers every queued call,
+retries a 429, gives up after its retries and respects its concurrency cap
+(proven against a loopback server).
+
+---
+
 ## The daily guide was cut off mid-word — 2026-11-06
 
 ### A 24,000-character guide ended in the middle of `/fishingguild`, inside an open code span
@@ -1609,11 +1667,14 @@ printed.
    would return one of them. Every create and rename path checks first, so this
    needs two near-simultaneous requests to hit; a `COLLATE NOCASE` unique index
    plus a duplicate scan is the clean fix.
-8. **The six-nation kingdom cap is checked before the update.** `cogs/kingdom.py`
-   counts `nations_in_kingdom()` and then calls `set_nation_kingdom()` outside a
-   transaction. Two simultaneous admin `/kingdom addnation` calls can both see
-   five members and leave seven. Admin-only and low-frequency; the fix is a
-   guarded count-and-update in one transaction.
+8. **The six-nation kingdom cap is checked before the update — resolved
+   2026-11-07.** `cogs/kingdom.py` used to count `nations_in_kingdom()` and then
+   call `set_nation_kingdom()` outside a transaction, so two simultaneous admin
+   `/kingdom addnation` calls could both see five members and leave seven.
+   `Database.assign_nation_to_kingdom()` now re-reads both rows, counts, moves
+   and writes the audit row inside one `BEGIN IMMEDIATE` transaction and returns
+   `ok`/`already`/`full`/`missing`; `checks/check_load.py` fires six simultaneous
+   joins at one free slot and sees exactly one winner and six members.
 9. **`/casino withdraw` can strand an open hand's stake.** The command only
    checks the current house balance, not the worst-case payout reserve of open
    blackjack/poker hands. Draining the house mid-hand makes settlement (and a
@@ -1739,6 +1800,7 @@ python3 -m pyflakes .          # unused names, undefined references
 | --- | --- |
 | `checks/check_logic.py` | payout formulas, pricing and discounts, amount parsing, tax label |
 | `checks/check_database.py` | schema and migrations, guarded one-shot flips, balance/ledger reconciliation, overdraw guard, account deletion logs the burned balance and nets to zero |
+| `checks/check_load.py` | readers are query-only WAL snapshots, a read returns while a money transaction is open and sees the pre-commit row, 120 concurrent credits lose nothing, 80 concurrent transfers never overdraw, a 280-operation read/write burst raises nothing, in-transaction reads see uncommitted rows, the six-nation cap holds under six simultaneous joins, the one-query Union listing, the autocomplete cache hits/expires, and the shared AI client answers every queued call, retries a 429, gives up after its retries and respects its concurrency cap (against a loopback server) |
 | `checks/check_transactions.py` | transaction isolation between tasks, nesting, rollback of an inner block, plain writes cannot commit another task's transaction |
 | `checks/check_contracts.py` | contract rejection cannot be undone by close **or reopen**, claim status re-check, closed-approved release, cross-guild target refusal, deleted destination guard, globally unique case IDs, atomic cycle quota, approval re-reads status/owner/treasury, a real Crown request (CR case ID, Crown thread, `faction='crown'`, Albert intro), Crown-funded claim, per-faction quota, short Crown treasury refusal, and both prompts preloading the live numbers |
 | `checks/check_transfers.py` | `/individual transfer` and `/individual pay`, cap refusal, self-transfer, no-wallet |
@@ -1764,7 +1826,7 @@ Every script builds its own throwaway SQLite database in a temp directory. None
 of them read `royal_bank.db`, so the live file is never touched.
 `check_poker.py` needs no database at all: `poker.py` is pure.
 
-All 22 scripts pass as of 2026-11-06, against the working copy. When you fix a
+All 23 scripts pass as of 2026-11-07, against the working copy. When you fix a
 bug, add its check here — a fix without a check is how the
 transaction-isolation defect survived this long.
 
@@ -1780,11 +1842,11 @@ transaction-isolation defect survived this long.
 | Payout tax | natural + manual runs, stale-list re-read, deleted/recreated wallet id, ledger both sides, disable switch |
 | Gambling | coinflip 50% / zero edge, all-in 10/11 / 1/11 edge, slots paytable 58,382/64,000, roulette 36/37 on every bet shape and the zero taking outside bets, blackjack branches, poker side pots/uncalled refunds/short all-ins, conservation |
 | Leaderboards | nation, kingdom and individual queries and embeds stay separate and ordered |
-| One-shot guards | petition flip, draw/creation status, contract double-approval, kit cooldown, concurrent case numbers |
+| One-shot guards | petition flip, draw/creation status, contract double-approval, kit cooldown, concurrent case numbers, six-nation cap under six simultaneous joins |
 | Live data | `integrity_check`, per-account and Union ledger reconciliation, union and individuals schema present, pre-fix dues rows identified |
 | API | JSON type handling, retired routes |
 | Schema | migrations over the live schema, `orders.union_discount`, `case_counters_global` |
 | Runner | summary required; bare exit/ERROR is a failure |
 | Daily sync | endpoint/value encoding, idempotent DDL, guide source and fallback, `guild_id`, run-on-start switches, disabled without credentials |
 
-All 22 scripts pass. When you add a check, add it to this table.
+All 23 scripts pass. When you add a check, add it to this table.

@@ -193,6 +193,7 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `DISCORD_TOKEN` | Discord bot token |
 | `GUILD_ID` | Guild used for fast slash-command sync (optional) |
 | `DB_PATH` | SQLite file path (default `royal_bank.db`) |
+| `DB_READ_POOL_SIZE` | Query-only WAL reader connections kept for lookups (default 4, clamped 1-16) |
 | `LOG_LEVEL` | Python logging level |
 | `CHATBOT_API_KEY` | Chat-bot key shared by Gilbert + Albert (legacy `AI_API_KEY` still works) |
 | `CHATBOT_API_URL` | Chat-bot OpenAI-compatible base URL (legacy `AI_API_URL`) |
@@ -200,6 +201,8 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `CHATBOT_TIMEOUT` | Chat-bot request timeout in seconds (legacy `AI_TIMEOUT`) |
 | `CHATBOT_TEMPERATURE` | Chat-bot sampling temperature (legacy `AI_TEMPERATURE`) |
 | `CHATBOT_MAX_TOKENS` | Chat-bot reply token limit (legacy `AI_MAX_TOKENS`) |
+| `CHATBOT_MAX_CONCURRENCY` | Simultaneous chat-bot calls the bot will make (default 8, clamped 1-64) |
+| `CHATBOT_RETRIES` | Retries for a 429/5xx chat-bot reply (default 2, clamped 0-4) |
 | `API_TOKEN` | Shared bearer token for the Forge mod |
 | `API_HOST` | HTTP bind address |
 | `API_PORT` | HTTP port |
@@ -451,6 +454,7 @@ Every source file and what it is for. Sub-packages have their own README.
 | `checks/run_all.py` | Runs every check below and prints a PASS/FAIL table; exits non-zero on failure |
 | `checks/check_logic.py` | Pure math: payout formulas, pricing, discounts, amount parsing, tax label |
 | `checks/check_database.py` | Schema, migrations, guarded one-shot flips, balance/ledger reconciliation, account-delete burn logging |
+| `checks/check_load.py` | Concurrency under load: readers are query-only WAL snapshots, a read returns while a money transaction is open (pre-commit row), 120 concurrent credits lose nothing, 80 concurrent transfers never overdraw, a 280-operation read/write burst raises nothing, the six-nation cap holds under six simultaneous joins, the one-query Union listing, the autocomplete cache hits/expires, and the shared AI client (a loopback server proves normal replies, a 429 retry, giving up after the retries, and the concurrency cap) |
 | `checks/check_transactions.py` | Per-task transaction isolation: commit vs rollback, nesting, no leakage |
 | `checks/check_contracts.py` | Contract lifecycle: rejection cannot be undone by close **or reopen**, claims re-read status, closed contracts can still release, cross-guild targets refused, deleted destinations cannot lose credits, global case IDs, atomic cycle quota, approval re-reads balances |
 | `checks/check_transfers.py` | `/individual transfer` and `/individual pay` driven through the real cog methods |
@@ -1124,7 +1128,7 @@ README. The live bot runs from the account root, not from that folder.
    reads `status = completed` with `upfront_claimed = 1` and
    `final_claimed = 1`. Nothing is outstanding: do not ask an admin to claim or
    release it again.
-4. **Tests.** The `checks/` suite is the automated verification: 22 standalone
+4. **Tests.** The `checks/` suite is the automated verification: 23 standalone
    scripts run by `python3 checks/run_all.py`, all passing against this tree.
    They cover the pure maths, the database and transaction layer, transfers,
    the per-run tax cycle, factions/Crown contracts, every gambling game
@@ -1296,6 +1300,44 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-07 — Concurrency hardening: read pool, shared AI client, atomic kingdom cap (uploaded; **restart pending**)
+
+**The problem.** Every statement went through one `aiosqlite` connection guarded
+by one process-wide lock, so on a busy evening a `/balance`, a leaderboard or an
+autocomplete dropdown queued behind any payout or casino settlement. SQLite's WAL
+mode allows concurrent readers; the bot was not using it.
+
+**What changed (no economy rule changed).**
+
+1. **Read pool.** `Database` keeps one **writer** (single-writer accounting is
+   what protects the ledger) and adds `DB_READ_POOL_SIZE` (default 4)
+   `query_only` WAL readers. `fetchone`/`fetchall` borrow a reader outside a
+   transaction and stay on the writer inside one. Explicit pragmas:
+   `journal_mode=WAL`, `busy_timeout=10000`, `synchronous=NORMAL`, 16/8 MiB page
+   caches, `temp_store=MEMORY`, 64 MiB mmap, `wal_autocheckpoint=1000`.
+2. **Shared, bounded AI client.** One `aiohttp` session per event loop instead of
+   a new connector per reply; `CHATBOT_MAX_CONCURRENCY` (default 8) caps
+   simultaneous provider calls; `CHATBOT_RETRIES` (default 2) retries a 429/5xx
+   honouring `Retry-After` inside one overall timeout budget. The Tavily lookup
+   reuses the same session.
+3. **Autocomplete cache.** `utils.autocomplete_snapshot()` caches dropdown rows
+   for three seconds only; balances and money decisions still read live.
+4. **Atomic kingdom cap.** `Database.assign_nation_to_kingdom()` counts, moves and
+   writes the audit row in one transaction, closing the seven-member race.
+
+**Measured** on a throwaway database with a payout-like writer (30 statements
+per transaction) and eight concurrent readers: the old one-lock path completed
+**192 reads** at **p50 5.25 ms / max 5.69 ms**; the read pool completed **4,913
+reads** at **p50 1.13 ms / max 2.91 ms**. Six simultaneous `/kingdom addnation`
+attempts on one free slot now yield exactly one winner and six members.
+
+**Verification.** New `checks/check_load.py` (23rd script) — `checks/run_all.py`
+**23/23**, `compileall` and `pyflakes` clean. Files: `database.py`,
+`gilbert/ai.py`, `gilbert/lookup.py`, `utils.py`, `shop/autocomplete.py`,
+`cogs/kingdom.py`, `bot.py`, new `checks/check_load.py`, `checks/run_all.py`,
+the docs. No command surface change: **115 commands / 16 cogs**.
+**Uploaded; the hosting panel must restart the process for it to run.**
 
 ### 2026-11-06 — Session close-out: guide trim, helper invites and burst capacity are **live** (**115 commands; restart 21:05 UTC**)
 
