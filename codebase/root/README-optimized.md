@@ -8,7 +8,9 @@
 > `royalcourt-redeem-1.0.0.jar`), and redemption is gated: an admin must run
 > `/server setip` before any shop key can be claimed in-game. Persona memory
 > (full transcript, bounded prompt window, cross-case recall), the provider
-> failure breaker and the parallel briefing reads are **local, not uploaded**.
+> failure breaker and the parallel briefing reads are **uploaded 2026-11-10,
+> waiting for a panel restart** (`gilbert/memory.py` is new — it is on the
+> host).
 
 This is a condensed, scannable summary of `README.md` (~3,250 lines → ~60 lines).
 Read this first; `README.md` is the reference for every rule below.

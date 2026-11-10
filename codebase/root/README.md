@@ -1312,7 +1312,7 @@ it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
 
-### 2026-11-10 — Persona memory: every turn kept, a bounded window sent (local working copy)
+### 2026-11-10 — Persona memory: every turn kept, a bounded window sent (uploaded; **restart pending**)
 
 **The problem.** A negotiation longer than ~40 messages contradicted itself. The
 prompt was built from `contracts.history`, and that column was overwritten with
@@ -1363,7 +1363,15 @@ storage/read bounds and the migration index in `check_database.py`; jitter and
 digest caps in `check_load.py` / `check_gilbert.py`. The twenty-negotiation
 assertion is now gated (`EchoAI(expect_concurrent=20)`) instead of relying on
 scheduler timing — it fails deterministically if a global lock is ever added.
-**Local working copy — not uploaded.**
+**Uploaded 2026-11-10 03:57 UTC** with `.bak-20261110-035728` copies of every
+replaced file and of `royal_bank.db`/`-wal`/`-shm`; every upload was read
+back and SHA-256-compared, and the deployed `.py` tree was pulled into an
+empty directory where `run_all.py` reported **24/24**. The migration was
+rehearsed first on a copy of the live database (4 contracts, 687 ledger
+rows): `contract_id` added, both indexes created, `integrity_check` ok, and
+the existing `UN-SOVERE-001` history backfilled into a working prompt. The
+running process still has the old code until the panel restarts it, and no
+live data was rewritten by the upload itself.
 
 ### 2026-11-09 — Simpler casino cards: one headline, three figures (uploaded; **restart pending**)
 

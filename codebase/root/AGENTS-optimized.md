@@ -7,8 +7,8 @@
 > implemented** (`forge-mod/`, Minecraft 1.20.1 / Forge 47.x, builds
 > `royalcourt-redeem-1.0.0.jar`), and redemption is gated: an admin must run
 > `/server setip` before any shop key can be claimed in-game. Persona memory,
-> the provider failure breaker and the parallel briefing reads are **local, not
-> uploaded**.
+> the provider failure breaker and the parallel briefing reads are **uploaded
+> 2026-11-10, waiting for a panel restart**.
 
 This is a condensed, scannable summary of `AGENTS.md` (~84 lines against ~1,180).
 Read this first; the full `AGENTS.md` is the reference for everything below.
