@@ -404,8 +404,9 @@ plus the top-level `/daily` and `/allin`.
   stake.
 * Both are **public**: the confirmation and the result are posted in the channel
   so the draw is watched. Only the confirm button is limited to the caller.
-  `gambling_ui.py` renders large result cards, stake/return/net/wallet/house
-  fields, a spectator prompt, and the bot seeds 🎉/💀 reactions on results.
+  `gambling_ui.py` renders one headline plus three figures (Bet / Payout /
+  Wallet) and a single spectator line; the house stack is left to
+  `/casino balance`. The bot seeds 🎉/💀 reactions on results.
 * Every payout run (Cash and Default) charges each wallet a 5% net worth tax
   through `Database.tax_individual()`. `_run_cycle()` reads the wallet list and
   each wallet inside the transaction, so a deleted/recreated wallet is taxed
@@ -447,9 +448,11 @@ four-seat Texas Hold'em table, and the `/casino` group holds the house account:
   the deal. `casino.wager_problem()` checks the minimum, the player's balance and
   the 100M cap.
 * The table is **public**: only `interaction_check` restricts the buttons to the
-  player whose hand it is. `gambling_ui.py` adds a spectator line to the table,
-  seeds 🎉/💀 reactions on settlement, and `/casino balance` is a public
-  House & Floor dashboard listing the four games and the house rules.
+  player whose hand it is. The card is Dealer / Your Hand with the stake in the
+  description; settlement adds one `Result` line and a spectator line, and
+  `gambling_ui.py` seeds 🎉/💀 reactions on settlement. `/casino balance` is a
+  public House & Floor dashboard listing all **six** gambling commands and the
+  house rules.
 * **Poker** `/poker amount:` deals a four-seat table: the player on seat 0 and
   three Minecraft-themed bot names on seats 1–3, each starting with the same
   stake. `poker_names.py` samples an AI-generated pool using Gilbert's

@@ -1,7 +1,10 @@
-# `forge-mod/` — Minecraft Forge companion (NOT IMPLEMENTED)
+# `forge-mod/` — Minecraft Forge companion (IMPLEMENTED)
 
-This folder is a **placeholder**. There are no Java sources, no `build.gradle`
-and no `mods.toml` yet. Nothing here is buildable or installable.
+A **server-side Forge mod** for **Minecraft 1.20.1 on Forge 47.x** that redeems
+Royal Court shop keys in-game. The sources live under
+`src/main/java/com/royalcourt/redeem/`; `build.gradle`, `settings.gradle`,
+`gradle.properties` and `src/main/resources/META-INF/mods.toml` build it into
+`royalcourt-redeem-1.0.0.jar`.
 
 **Target pinned 2026-11-06 by the owner: Minecraft 1.20.1 on Forge 47.x**
 (the 1.20.1 line — 47.2.x/47.3.x are the concrete builds; NeoForge is *not*
@@ -11,6 +14,63 @@ before writing code, because it decides the Gradle plugin, the mappings
 
 The README describes the intended mod so the next developer knows what to
 build and how it must talk to the bot.
+
+---
+
+## Security gate: the admin must enter the server IP first
+
+**The mod cannot claim a single order until a Discord admin registers the
+Minecraft server's IP.** This is enforced on the bot, not the mod, so a modified
+client cannot bypass it:
+
+1. An admin runs `/server setip ip:<public-ip>` in Discord (Administrator only).
+   `/server show` reports the current value; `/server clear` removes it.
+2. Every `/api/preview` and `/api/redeem` call then checks the **connecting
+   address** against that stored IP (behind the panel proxy it reads the first
+   hop of `X-Forwarded-For`). A mismatch is `403 ip_not_allowed`.
+3. With no IP stored, every redemption is `403 server_not_registered` and the
+   key is left untouched. A blocked attempt never consumes the order.
+
+The mod sends its UUID/name and (optionally) its configured `serverIp` for
+logging, but the bot trusts only the real socket/forwarded address.
+
+## Build & install
+
+```bash
+cd forge-mod
+./gradlew build            # needs JDK 17; produces build/libs/royalcourt-redeem-1.0.0.jar
+```
+
+If the Gradle wrapper is not present, use any Gradle 8.1.x–8.5 with the ForgeGradle
+6 plugin (`gradle build`). Copy the jar into the server's `mods/` folder on
+Minecraft 1.20.1 / Forge 47.x. The mod is **server-side**; clients do not need it.
+
+## Configure
+
+On first launch write `config/royalcourt-common.toml`:
+
+```toml
+[api]
+    # Base URL of the bot API host — no /api suffix.
+    baseUrl = "https://your-panel-host:8080"
+    # The same value as API_TOKEN in the bot's environment. Never commit it.
+    token = "paste-the-shared-token-here"
+    timeoutSeconds = 15
+    # Optional, for logs only; the bot checks the real connecting IP.
+    serverIp = "203.0.113.7"
+```
+
+## In-game use
+
+* `/redeem RC-XXXXXX-XXXXXX` — asks the bot to **preview** the order and prints
+  the items with a green **[ Claim Now ]** button. Nothing is granted yet.
+* `/redeem RC-XXXXXX-XXXXXX confirm` — asks the bot to **redeem** the key, then
+  gives the items (dropping overflow at the player's feet) and posts a receipt.
+
+Common answers: `403 server_not_registered` → an admin must run `/server setip`;
+`403 ip_not_allowed` → this server is not the registered one; `409` → the key was
+already claimed.
+
 
 ---
 
@@ -58,6 +118,31 @@ Content-Type: application/json
 
 A missing or wrong token returns HTTP 401.
 
+### Security gate — `403` before any item is granted
+
+Every call below first looks up the order's guild and reads the IP an admin
+registered with `/server setip`. It refuses **before** touching the order:
+
+| Status | `error` | Meaning |
+|---|---|---|
+| 403 | `server_not_registered` | No admin has run `/server setip`; redemption is locked |
+| 403 | `ip_not_allowed` | The connecting address is not the registered server IP |
+
+The connecting address is the socket peer, or the first hop of
+`X-Forwarded-For` when the panel proxy sits in front (set `API_TRUST_FORWARDED=0`
+to ignore it). A refused request leaves the key `pending`, so it can be claimed
+once the server is registered.
+
+### `POST /api/preview`
+
+Returns what an order would grant **without consuming the key** — the same auth,
+payload and IP gate as `/api/redeem`. This is what `/redeem <key>` calls before
+showing the Claim button.
+
+Success `200` adds `"preview": true` to the redeem response shape (no
+`redeemed_uuid` change, order stays `pending`). A redeemed key answers `409`; an
+unknown key `404`.
+
 ### `POST /api/redeem`
 
 Redeems a shop order.
@@ -71,6 +156,8 @@ Request:
   "player_name": "Steve"
 }
 ```
+
+`server_ip` is accepted as an optional echo for logs; it never replaces the gate.
 
 Success `200`:
 
@@ -94,11 +181,14 @@ Errors:
 |---|---|---|
 | 400 | `missing_fields` | Key or UUID missing |
 | 401 | `unauthorized` | Bad/missing bearer token |
+| 403 | `server_not_registered` | No admin-registered server IP (see above) |
+| 403 | `ip_not_allowed` | Caller is not the registered server IP |
 | 404 | `not_found` | No order with that key |
 | 409 | `already_redeemed` | Key already used; response includes `redeemed_uuid` |
 
 Redemption is atomic. If two clients race, only one gets `200`; the other gets
 `409`.
+
 
 ### `POST /api/contract/preview` and `POST /api/contract/redeem` — **RETIRED**
 
@@ -148,43 +238,40 @@ today** — `key`, `display_name`, `quantity`, and nothing else.
 | `enchant:<id>:<level>` | 8 | **not expanded and not described in the payload**: you must parse the key (`enchant:mending:1`) and build an enchanted book yourself |
 | `backport:<id>` | 7 (27 rows flagged `is_backported`) | these do not exist in vanilla — the mod (or a datapack) has to provide them |
 
-### Four gaps to close, in the order they block work
+### The four gaps, and how they are now closed
 
-1. **No preview route.** `/api/redeem` marks the order `redeemed` in the same call
-   that returns the items, so the "confirmation screen before granting" required
-   by the constraints below cannot be built against it, and a player who
-   disconnects after the POST loses the key without items. The bot needs a
-   non-consuming `POST /api/preview` (same payload, no state change) — **not yet
-   implemented**, see README section 9 item 10. Do not work around it by
-   redeeming twice.
-2. **No enchant/backport fields.** Either parse `enchant:<id>:<level>` in the mod
-   or extend the payload with `enchant: {id, level}` and `backported: true`.
-   Extending it is additive and safe for old clients.
-3. **Reachability.** `API_HOST=0.0.0.0`, `API_PORT=8080` are set on the host, but
-   port 8080 there is answered by the hosting panel's HTTPS proxy (probe returns
-   the panel's `401 {"error":"The required authorization heads were not present"}`,
-   not our `{"ok": true}` health body). The API is therefore not reachable from
-   outside until a port/allocation is assigned; check the panel log for
-   `Redemption API listening on …` first.
-4. **No `max_stack` in the payload.** 1.20.1 lets you read
-   `stack.getMaxStackSize()` from the item itself, so this is the least urgent —
-   but overflow handling still has to be written and tested.
+1. **No preview route.** **Fixed** — the bot now serves a non-consuming
+   `POST /api/preview` (same auth, payload and IP gate as `/api/redeem`, no state
+   change). The mod previews, shows the items and a Claim button, and only then
+   calls `/api/redeem`. A player who disconnects after preview has lost nothing.
+2. **No enchant/backport fields.** **Handled in the mod.** `enchant:<id>:<level>`
+   is parsed into an `EnchantedBookItem` with a stored enchantment;
+   `backport:<id>` is resolved against `minecraft:<id>` and then the raw id,
+   and anything still missing is reported to the player instead of silently lost.
+3. **Reachability.** Unchanged on the host side: port 8080 is the panel proxy,
+   so the mod's `api.baseUrl` must point at a reachable allocation and the API
+   log must show `Redemption API listening on …`. Until then the mod fails closed.
+   When the proxy terminates TLS, it must pass `X-Forwarded-For` for the IP gate
+   to see the Minecraft server (or set `API_TRUST_FORWARDED=0` for a direct bind).
+4. **No `max_stack` in the payload.** **Not needed** — the mod reads
+   `stack.getMaxStackSize()` and splits stacks itself, dropping overflow at the
+   player's feet.
 
-### Suggested build order (1.20.1 / Forge 47.x)
+### Suggested build order (1.20.1 / Forge 47.x) — all done
 
 1. Gradle MDK for 1.20.1 + `mods.toml`, mod id `royalcourt`, package
-   `com.royalcourt.redeem`.
+   `com.royalcourt.redeem`. **DONE**
 2. Config (`ForgeConfigSpec`): `apiBaseUrl`, `apiToken`, `timeoutSeconds`.
-   Token from config only — never source, never logs.
-3. `/redeem <key>` client command (or a key-entry GUI) that calls **preview**
-   first and renders item name × quantity.
-4. Confirm → `POST /api/redeem` → grant each stack **on the server thread**
-   (`ServerLifecycleHooks`/`DistExecutor`), dropping overflow at the player's
-   feet, then post a chat receipt.
+   Token from config only — never source, never logs. **DONE**
+3. `/redeem <key>` command that calls **preview** first and renders item name ×
+   quantity with a Claim button. **DONE**
+4. Confirm → `POST /api/redeem` → grant each stack **on the server thread**,
+   dropping overflow at the player's feet, then post a chat receipt. **DONE**
 5. Map `enchant:<id>:<level>` → `EnchantedBookItem` with a stored enchantment;
-   map `backport:*` → whatever the mod registers.
-6. Fail closed on every network error, and treat `409` as "already claimed by
-   <uuid>" rather than an error.
+   map `backport:*` best-effort and report misses. **DONE**
+6. Fail closed on every network error, and treat `409` as "already claimed".
+   **DONE**
+
 
 ---
 
@@ -207,12 +294,15 @@ today** — `key`, `display_name`, `quantity`, and nothing else.
 | Item | Status |
 |---|---|
 | Forge/Minecraft version chosen | **DONE — Minecraft 1.20.1, Forge 47.x** (owner decision, 2026-11-06) |
-| Gradle project scaffold | TODO |
-| Config (API URL, token, timeout) | TODO |
-| Shop key entry + confirmation GUI | TODO (blocked by the missing `POST /api/preview`) |
-| `POST /api/redeem` client | TODO — contract verified, payload documented above |
-| Item granting + overflow handling | TODO (plus the `enchant:`/`backport:` key mapping) |
+| Gradle project scaffold | **DONE** — ForgeGradle 6, `gradlew`, `build.gradle`; `gradle build` produced `royalcourt-redeem-1.0.0.jar` |
+| Config (API URL, token, timeout) | **DONE** — `RedeemConfig` / `royalcourt-common.toml` |
+| Shop key entry + confirmation | **DONE** — `/redeem <key>` preview list + clickable Claim, then `/redeem <key> confirm` |
+| `POST /api/preview` (non-consuming) | **DONE** — bot route added |
+| `POST /api/redeem` client | **DONE** |
+| Item granting + overflow handling | **DONE** — `ItemGranting`, incl. `enchant:`/`backport:` mapping |
+| Admin-entered server IP gate | **DONE** — `/server setip/show/clear`; API returns `403` and leaves the key pending |
 | Contract preview/redeem client | **REMOVED** — both routes answer `410`; contracts pay Discord credits |
 | In-game economy hook for contract amounts | **NOT PLANNED** — no in-game contract currency |
-| Offline/retry safety | TODO |
-| API reachable from the Minecraft server | **BLOCKED** — port 8080 is the panel proxy; needs an allocation |
+| Offline/retry safety | **DONE** — fails closed; nothing granted unless the API returns 200 |
+| API reachable from the Minecraft server | **HOST CONFIG** — port 8080 is the panel proxy; set a reachable allocation and confirm `Redemption API listening on …` |
+

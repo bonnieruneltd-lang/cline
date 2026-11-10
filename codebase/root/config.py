@@ -81,7 +81,16 @@ KIT_COOLDOWN_DAYS = 7                   # players may create one kit every 7 day
 CONTRACT_MAX_CREDITS = 100_000_000      # hard cap per contract
 CONTRACT_MIN_CREDITS = 1                # no practical minimum; budget must be positive
 CONTRACT_UPFRONT_PCT = 25               # % paid upfront; remainder held in escrow
-CONTRACT_HISTORY_LIMIT = 40             # messages of AI context kept per contract
+CONTRACT_HISTORY_LIMIT = 40             # messages of legacy JSON context kept per contract
+# The persona prompt is built from the full transcript held in albert_memory:
+# the newest turns verbatim, everything older condensed. These are the bounds
+# the model sees (chars, not messages, so a wall of text cannot crowd out the
+# conversation). The stored transcript itself is never trimmed.
+CONTRACT_CONTEXT_TURNS = 16             # recent turns sent verbatim
+CONTRACT_CONTEXT_CHARS = 8000           # ceiling for the whole conversation window
+CONTRACT_DIGEST_CHARS = 2000            # ceiling for the condensed older turns
+CONTRACT_MEMORY_TURNS = 8               # lines of recall from earlier cases
+CONTRACT_MEMORY_CHARS = 1200            # ceiling for that recall block
 CONTRACT_THREAD_ARCHIVE_MINUTES = 10080 # 7 days of inactivity before auto-archive
 
 # Contracts an owner may hold in one natural payout cycle, by owner type.

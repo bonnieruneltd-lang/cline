@@ -107,15 +107,18 @@ class BlackjackView(discord.ui.View):
         embed = discord.Embed(
             title="🂡 Blackjack",
             description=(
-                f"👀 **The table is watching.** Only the player can act; "
-                f"spectators can react with 🎉 or 💀 after the result.\n\n"
-                f"<@{self.author_id}> pushes **{money(self.stake)}** across the felt."
+                f"<@{self.author_id}> staked **{money(self.stake)}** · "
+                "👀 table is watching\n\n"
+                + (
+                    "Hand settled — deal again with `/blackjack`."
+                    if reveal
+                    else "**Hit** for another card, or **Stand** to keep your total."
+                )
             ),
             color=config.GOLD_COLOR,
         )
         embed.add_field(name="Dealer", value=dealer, inline=True)
         embed.add_field(name="Your Hand", value=player, inline=True)
-        embed.add_field(name="Stake", value=money(self.stake), inline=True)
         embed.set_footer(text=footer)
         return embed
 
@@ -171,19 +174,20 @@ class BlackjackView(discord.ui.View):
 
         embed = self._table(
             reveal=revealed,
-            footer=f"{head} · Balance {money(after)} · Casino {money(house)}",
+            footer=f"⚜ Royal Court Casino · house {money(house)}",
         )
         embed.color = tint
         embed.add_field(
             name="Result",
             value=(
-                f"**{head}**\n"
-                f"Stake: {money(self.stake)}\n"
-                f"Returned: {money(outcome.gross)}\n"
-                f"Net: {outcome.net:+,}\n"
-                f"Balance: **{money(after)}** · Casino: **{money(house)}**"
+                f"**{head}** — returned {money(outcome.gross)} · "
+                f"net {gambling_ui.signed_money(outcome.net)} · "
+                f"wallet **{money(after)}**"
             ),
             inline=False,
+        )
+        embed.add_field(
+            name="The Floor", value=gambling_ui.SPECTATOR_HINT, inline=False
         )
         return embed
 
@@ -341,8 +345,8 @@ class PokerTableView(discord.ui.View):
 
     def _footer(self) -> str:
         return (
-            f"Stake {money(self.stake)} · blinds {self.game.small_blind:,}/"
-            f"{self.game.big_blind:,} · only the player can act"
+            f"⚜ Royal Court Casino · stake {money(self.stake)} · blinds "
+            f"{self.game.small_blind:,}/{self.game.big_blind:,}"
         )
 
     def _table_embed(self) -> discord.Embed:
@@ -574,7 +578,7 @@ class PokerTableView(discord.ui.View):
             game=self.game,
             outcome=outcome,
             footer=footer
-            or f"Settled · Casino stack {money(house)} · every hand is public",
+            or f"⚜ Royal Court Casino · house {money(house)} · every hand is public",
         )
 
     async def on_timeout(self) -> None:
@@ -623,7 +627,7 @@ class Casino(commands.Cog):
     # ------------------------------------------------------------------
     @app_commands.command(
         name="blackjack",
-        description="Play a hand of blackjack against the Casino. Winner takes the house's credits.",
+        description="Hit or stand against the dealer. A natural 21 pays 3:2.",
     )
     @app_commands.describe(
         amount="Credits to stake, or all / half / quarter of your balance.",
@@ -743,8 +747,8 @@ class Casino(commands.Cog):
         embed = view._table(
             reveal=False,
             footer=(
-                f"House holds {money(house_after)} · hit or stand below · "
-                f"blackjack pays 3:2 · dealer stands on all 17s"
+                f"⚜ Royal Court Casino · pays 3:2 · dealer stands on 17 · "
+                f"house {money(house_after)}"
             ),
         )
         await interaction.response.send_message(embed=embed, view=view)
@@ -755,7 +759,7 @@ class Casino(commands.Cog):
     # ------------------------------------------------------------------
     @app_commands.command(
         name="poker",
-        description="Sit at a four-seat Texas Hold'em table against three house bots.",
+        description="Texas Hold'em against three house bots — chips you leave with are yours.",
     )
     @app_commands.describe(
         amount="Buy-in, or all / half / quarter of your balance.",
@@ -1046,7 +1050,7 @@ class Casino(commands.Cog):
     # ------------------------------------------------------------------
     @app_commands.command(
         name="roulette",
-        description="Bet on the single-zero wheel: a colour, odd/even, low/high, a dozen, a column or a number.",
+        description="Spin the single-zero wheel: colour, odd/even, high/low, dozen, column or number.",
     )
     @app_commands.describe(
         amount="Credits to stake, or all / half / quarter of your balance.",

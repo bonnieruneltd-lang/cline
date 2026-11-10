@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
+import re
 import time
 
 import aiohttp
@@ -101,6 +103,7 @@ async def close_shared_sessions() -> None:
     sessions = list(_SESSIONS.values())
     _SESSIONS.clear()
     _SEMAPHORES.clear()
+    reset_breakers()
     for session in sessions:
         try:
             if not session.closed:
@@ -110,7 +113,12 @@ async def close_shared_sessions() -> None:
 
 
 def _retry_delay(response: aiohttp.ClientResponse | None, attempt: int) -> float:
-    """Retry-After when the provider sent one, else exponential backoff."""
+    """Retry-After when the provider sent one, else exponential backoff.
+
+    The exponential branch is jittered: twenty negotiations retried in lockstep
+    keep colliding on the same attempt, which is exactly what the rate limiter
+    punishes. Spreading them over ±25% turns a thundering herd into a trickle.
+    """
     if response is not None:
         header = (response.headers.get("Retry-After") or "").strip()
         if header:
@@ -118,7 +126,94 @@ def _retry_delay(response: aiohttp.ClientResponse | None, attempt: int) -> float
                 return min(max(float(header), 0.0), RETRY_MAX_SECONDS)
             except ValueError:
                 pass
-    return min(RETRY_BASE_SECONDS * (2 ** attempt), RETRY_MAX_SECONDS)
+    base = min(RETRY_BASE_SECONDS * (2 ** attempt), RETRY_MAX_SECONDS)
+    return min(base * random.uniform(0.75, 1.25), RETRY_MAX_SECONDS)
+
+
+# ---------------------------------------------------------------------------
+# Failure breaker
+# ---------------------------------------------------------------------------
+# When the endpoint is down, misconfigured (401/402/404) or unreachable, every
+# waiting negotiation used to run its own retry ladder: a twenty-thread evening
+# turned one outage into sixty doomed requests and twenty slow replies. After
+# ``BREAKER_FAILURES`` consecutive failures the endpoint is declared unhealthy
+# for ``BREAKER_SECONDS``: calls return ``None`` at once, so the caller posts
+# its fallback instantly and the provider is left alone to recover.
+BREAKER_FAILURES = 3
+BREAKER_SECONDS = 20.0
+_FAILURES: dict[tuple[int, str], int] = {}
+_OPEN_UNTIL: dict[tuple[int, str], float] = {}
+
+
+def _breaker_seconds() -> float:
+    try:
+        value = float((os.getenv("CHATBOT_BREAKER_SECONDS") or "").strip() or BREAKER_SECONDS)
+    except ValueError:
+        value = BREAKER_SECONDS
+    return max(0.0, min(value, 600.0))
+
+
+def _breaker_key(endpoint: str, model: str) -> tuple[int, str]:
+    # Keyed by loop as well: two ``asyncio.run`` cycles (the checks) must not
+    # inherit each other's breaker.
+    return (id(asyncio.get_running_loop()), f"{endpoint}|{model}")
+
+
+def breaker_open(key: tuple[int, str]) -> bool:
+    until = _OPEN_UNTIL.get(key)
+    if until is None:
+        return False
+    if time.monotonic() < until:
+        return True
+    _OPEN_UNTIL.pop(key, None)
+    _FAILURES.pop(key, None)
+    return False
+
+
+def breaker_note_success(key: tuple[int, str]) -> None:
+    _FAILURES.pop(key, None)
+    _OPEN_UNTIL.pop(key, None)
+
+
+def breaker_note_failure(key: tuple[int, str]) -> None:
+    failures = _FAILURES.get(key, 0) + 1
+    _FAILURES[key] = failures
+    seconds = _breaker_seconds()
+    if seconds and failures >= BREAKER_FAILURES:
+        _OPEN_UNTIL[key] = time.monotonic() + seconds
+        logger.warning(
+            "AI endpoint paused for %.0fs after %d consecutive failures (%s)",
+            seconds, failures, key[1],
+        )
+
+
+def reset_breakers() -> None:
+    """Forget every breaker (shutdown and tests)."""
+    _FAILURES.clear()
+    _OPEN_UNTIL.clear()
+
+
+def _log_usage(payload) -> None:
+    """One debug line per reply: prompt/completion tokens, when reported.
+
+    Cheap observability for prompt bloat: a long negotiation whose prompt
+    tokens creep up every turn is the signal that the memory window needs
+    tuning, and this is the only place that number is visible.
+    """
+    if not logger.isEnabledFor(logging.DEBUG) or not isinstance(payload, dict):
+        return
+    node = payload
+    for _ in range(3):
+        usage = node.get("usage") if isinstance(node, dict) else None
+        if isinstance(usage, dict):
+            logger.debug(
+                "AI usage: prompt=%s completion=%s total=%s",
+                usage.get("prompt_tokens"),
+                usage.get("completion_tokens"),
+                usage.get("total_tokens"),
+            )
+            return
+        node = node.get("data") if isinstance(node, dict) else None
 
 
 _DEFAULT_MODEL = "deepseek-chat"
@@ -219,6 +314,34 @@ def reply_text(payload) -> str | None:
     return content.strip() or None
 
 
+# A reply that opens with the speaker's own name reads like a script excerpt:
+# "Gilbert: Right then, ..." posted under Gilbert's own message. Models slip into
+# this when the history shows "user: ..." lines, so the label is removed. Only
+# the personas' own names are touched — "Note:" or "Case UN-X-001:" are content.
+_ECHOED_LABEL = re.compile(
+    r"^\s*(?:gilbert|albert|the court|the union|assistant|ai)\s*[:\-–—]\s*",
+    re.IGNORECASE,
+)
+
+
+def clean_reply(text: str | None, speaker: str = "") -> str | None:
+    """Tidy a model reply before it is posted as the persona.
+
+    Removes an echoed ``Gilbert:``/``Albert:`` label, squeezes runs of blank
+    lines, and returns ``None`` for an empty result so the caller posts its own
+    fallback line instead of an empty message.
+    """
+    if not text:
+        return None
+    body = str(text).strip()
+    if speaker:
+        name = re.escape(speaker.strip())
+        body = re.sub(rf"^\s*{name}\s*[:\-–—]\s*", "", body, flags=re.IGNORECASE)
+    body = _ECHOED_LABEL.sub("", body, count=1)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return body or None
+
+
 class GilbertAI:
     def __init__(
         self,
@@ -291,6 +414,13 @@ class GilbertAI:
         # quickly (429/5xx). A request that burns the whole timeout is not
         # repeated, which keeps the daily guide from doubling a long call.
         deadline = time.monotonic() + self.timeout
+        breaker = _breaker_key(self.base_url, self.model)
+        if breaker_open(breaker):
+            logger.warning(
+                "AI endpoint %s is paused after repeated failures; skipping this call",
+                self.base_url,
+            )
+            return None
 
         # Queue behind the shared cap: the provider is the bottleneck, and
         # firing 20 requests at once only converts them into 429s.
@@ -315,6 +445,10 @@ class GilbertAI:
                                     if isinstance(data, dict)
                                     else type(data).__name__,
                                 )
+                                breaker_note_failure(breaker)
+                            else:
+                                breaker_note_success(breaker)
+                                _log_usage(data)
                             return content
                         body = (await resp.text())[:300]
                         hint = provider_hint(resp.status, body)
@@ -327,6 +461,10 @@ class GilbertAI:
                             f" [hint: {hint}]" if hint else "",
                         )
                         if resp.status not in RETRY_STATUSES or attempt + 1 >= attempts:
+                            # 429 means the provider is healthy but busy: that is
+                            # not an outage, so it never opens the breaker.
+                            if resp.status != 429:
+                                breaker_note_failure(breaker)
                             return None
                         delay = _retry_delay(resp, attempt)
                 except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
@@ -338,10 +476,12 @@ class GilbertAI:
                     )
                     if attempt + 1 >= attempts:
                         logger.exception("Gilbert AI request failed: %s", exc)
+                        breaker_note_failure(breaker)
                         return None
                     delay = _retry_delay(None, attempt)
                 except Exception as exc:  # pragma: no cover - unexpected shape
                     logger.exception("Gilbert AI request failed: %s", exc)
+                    breaker_note_failure(breaker)
                     return None
                 # Back off, but never past the overall budget.
                 await asyncio.sleep(max(0.0, min(delay, deadline - time.monotonic())))

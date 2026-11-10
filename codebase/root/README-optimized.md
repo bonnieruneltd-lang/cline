@@ -1,9 +1,14 @@
 # README — optimized read-first version
 
-> **Current state (2026-11-07):** 115 commands / 16 cogs, all 23 checks green
-> on this checkout. Concurrency hardening (WAL read pool, shared AI client,
-> 3-second autocomplete cache, atomic kingdom cap) is **uploaded but needs a
-> panel restart** to run. `/contract invite` is live.
+> **Current state (2026-11-10):** 119 commands / 17 cogs, all 24 checks green
+> on this checkout. Casino cards are simplified — one headline, three figures
+> (Bet / Payout / Wallet) and one spectator line; the house stack lives on
+> `/casino balance` — **uploaded, needs a panel restart**. The **Forge mod is
+> implemented** (`forge-mod/`, Minecraft 1.20.1 / Forge 47.x, builds
+> `royalcourt-redeem-1.0.0.jar`), and redemption is gated: an admin must run
+> `/server setip` before any shop key can be claimed in-game. Persona memory
+> (full transcript, bounded prompt window, cross-case recall), the provider
+> failure breaker and the parallel briefing reads are **local, not uploaded**.
 
 This is a condensed, scannable summary of `README.md` (~3,250 lines → ~60 lines).
 Read this first; `README.md` is the reference for every rule below.
@@ -30,8 +35,20 @@ Three economy account types that **never mix**: `nation`, `kingdom`, `individual
 9. **Contracts never charge the contracting party.** Union pays 25% upfront / 75% on release from its own treasury; membership is never required to request.
 10. **Crown tax** = 100% of the regular-soldier payout line, after a 30-day grace. Crown supplier contracts buy one catalog item each (legacy paths only).
 
+## The negotiators' memory (do not regress)
+- Every turn is stored in `albert_memory` (`add_persona_turn`), keyed by
+  `contract_id`; **nothing is pruned**. `contracts.history` is only the legacy
+  40-turn compatibility window.
+- `gilbert/memory.py` builds the prompt: newest 16 turns verbatim + one
+  `EARLIER IN THIS NEGOTIATION` digest of older turns + 8 lines of
+  `PRIOR EXCHANGES WITH THIS ACCOUNT` from earlier cases. Pure arithmetic — never
+  replace it with a summarisation provider call on the reply path.
+- `GilbertAI.complete()` has a failure breaker (`CHATBOT_BREAKER_SECONDS`, 20 s)
+  and jittered backoff; `clean_reply()` strips an echoed persona label.
+
 ## Commands
-- **115 commands / 16 cogs** (pinned by `checks/check_cogs.py`).
+- **119 commands / 17 cogs** (pinned by `checks/check_cogs.py`). The four new
+  nodes are the `/server` group (`setip`/`show`/`clear`) that gate the Forge mod.
 - `/faction contract` takes exactly `faction`, `account`, `proposal`, `budget`. Retired names (`crown`, `union`, `audience`, `contract request`, …) must not return.
 - Shop keys are single-use `RC-XXXXXX-XXXXXX`, DM'd to buyer; `markredeemed` is once-only and never rewrites an existing redemption UUID.
 - `/give` is treasury→member only; there is no "individual source" direction.

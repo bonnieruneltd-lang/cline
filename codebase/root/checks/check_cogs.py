@@ -1,4 +1,4 @@
-"""Daily-claim concurrency plus import/cog-load smoke test (expects 115 commands)."""
+"""Daily-claim concurrency plus import/cog-load smoke test (expects 119 commands)."""
 import asyncio, os, sys, tempfile, datetime as dt
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
@@ -69,8 +69,11 @@ async def cog_smoke():
         # 114 = 112 + the two casino games /slots and /roulette.
         # 115 adds /contract invite, so the party can bring a builder or
         # treasurer into its own negotiation (and the persona answers them).
-        assert n == 115, f"expected 115 commands, found {n}"
-        assert len(COGS) == 16, f"expected 16 cogs, found {len(COGS)}"
+        # 119 adds the four-node /server group (the admin-registered Minecraft
+        # server IP that gates the Forge mod's redemption: /server setip,
+        # /server show, /server clear and the group itself).
+        assert n == 119, f"expected 119 commands, found {n}"
+        assert len(COGS) == 17, f"expected 17 cogs, found {len(COGS)}"
         names = {command.qualified_name for command in bot.tree.walk_commands()}
         for required in (
             "payout cash", "payout default", "payout trigger", "transfer", "give",
@@ -79,6 +82,7 @@ async def cog_smoke():
             "faction withdraw", "faction setchannel",
             "contract invite",
             "slots", "roulette",
+            "server setip", "server show", "server clear",
         ):
             assert required in names, f"missing command {required}"
         # /give is the treasury-to-member shortcut: a nation/kingdom source, a
@@ -123,6 +127,13 @@ async def cog_smoke():
         )
         # Optional on purpose: only a straight-up bet carries a number.
         assert number_param.required is False, number_param
+        # /server setip takes exactly one argument, the numeric Minecraft IP the
+        # Forge mod must connect from. Nothing else belongs on the gate.
+        setip_cmd = next(
+            command for command in bot.tree.walk_commands()
+            if command.qualified_name == "server setip"
+        )
+        assert {param.name for param in setip_cmd.parameters} == {"ip"}, setip_cmd.parameters
         for old in (
             "join", "commit", "donate", "audience", "crown", "union",
             "crown status", "crown contracts", "crown cancel", "crown fund",

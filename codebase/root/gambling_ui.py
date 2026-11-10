@@ -3,11 +3,11 @@ gambling_ui.py
 ==============
 Shared spectator-facing presentation for the public gambling tables.
 
-Every result is posted in the channel, so the embeds are written for the people
-watching as much as for the player: big result words, a readable table, payout
-and wallet figures, and a visible invitation to react. No money logic lives
-here. The same module renders the public Texas Hold'em table and its showdown
-card.
+Every result is posted in the channel, so the card has to read at a glance: one
+headline with the outcome, three figures (bet, payout, wallet) and one line
+inviting the audience to react. The house stack is not repeated on every hand —
+it lives on ``/casino balance``. No money logic lives here. The same module
+renders the public Texas Hold'em table and its showdown card.
 """
 from __future__ import annotations
 
@@ -17,14 +17,40 @@ import config
 from utils import money
 
 SPECTATOR_HINT = (
-    "👀 **The table is watching.** Spectators can react with "
-    "🎉 to cheer a win or 💀 for a bust — the next hand is only a command away."
+    "👀 **The table is watching** — react 🎉 to cheer a win or 💀 for a bust."
 )
-CASINO_FOOTER = "⚜ The Royal Court · Casino floor · every wager is public"
+CASINO_FOOTER = "⚜ Royal Court Casino · every wager is public"
 
 
 def _footer(embed: discord.Embed, text: str = CASINO_FOOTER) -> discord.Embed:
     embed.set_footer(text=text)
+    return embed
+
+
+def signed_money(amount: int) -> str:
+    """``+1,000 credits`` / ``-1,000 credits`` for a net line."""
+    return f"{'+' if amount >= 0 else '-'}{money(abs(int(amount)))}"
+
+
+def _figures(
+    embed: discord.Embed, *, stake: int, gross: int, balance: int, won: bool
+) -> discord.Embed:
+    """The three figures every result card shows: bet, payout and wallet.
+
+    One row, three fields, net folded into the payout so the card stays short.
+    The house stack is deliberately left to ``/casino balance`` instead of being
+    repeated on every hand.
+    """
+    net = gross - stake if won else -stake
+    payout = (
+        f"**{money(gross)}**\nnet {signed_money(net)}"
+        if won
+        else f"—\nnet {signed_money(net)}"
+    )
+    embed.add_field(name="Bet", value=money(stake), inline=True)
+    embed.add_field(name="Payout", value=payout, inline=True)
+    embed.add_field(name="Wallet", value=money(balance), inline=True)
+    embed.add_field(name="The Floor", value=SPECTATOR_HINT, inline=False)
     return embed
 
 
@@ -39,31 +65,25 @@ def coinflip_result(
     house: int,
     won: bool,
 ) -> discord.Embed:
-    """A theatrical but compact coinflip result for the channel."""
+    """A one-glance coinflip result for the channel."""
     title = "🪙 COINFLIP · You Win" if won else "🪙 COINFLIP · You Lose"
     color = config.GOLD_COLOR if won else config.RED_COLOR
-    net = gross - stake if won else -stake
+    payout = (
+        f"the Casino pays **{money(gross)}**"
+        if won
+        else "the stake goes to the house"
+    )
     embed = discord.Embed(
         title=title,
         description=(
-            f"## {landed.title()}!\n"
-            f"{user_mention} called **{called}** and the coin landed "
-            f"**{landed}**.\n\n"
-            + (
-                f"The Casino pays **{money(gross)}** across the table."
-                if won
-                else "The stake slides into the Casino's stack."
-            )
+            f"## 🪙 {landed.title()}\n"
+            f"{user_mention} called **{called}** · landed **{landed}** — {payout}."
         ),
         color=color,
     )
-    embed.add_field(name="Stake", value=money(stake), inline=True)
-    embed.add_field(name="Return", value=money(gross) if won else "—", inline=True)
-    embed.add_field(name="Net", value=f"{net:+,}", inline=True)
-    embed.add_field(name="Player Wallet", value=money(balance), inline=True)
-    embed.add_field(name="Casino Stack", value=money(house), inline=True)
-    embed.add_field(name="The Floor", value=SPECTATOR_HINT, inline=False)
+    _figures(embed, stake=stake, gross=gross, balance=balance, won=won)
     return _footer(embed, "⚜ Royal Court Casino · 50% win · 2× return · public table")
+
 
 def allin_confirm(
     *,
@@ -79,18 +99,17 @@ def allin_confirm(
         title="🎰 Confirm Your All-In",
         description=(
             f"## {number}× or nothing\n"
-            f"{user_mention} is pushing **their whole wallet** onto one draw.\n\n"
-            "The table is watching. Press **Bet it all** only if you mean it."
+            f"{user_mention} is putting **their whole wallet** on one draw.\n\n"
+            "Press **Bet it all** only if you mean it."
         ),
         color=config.GOLD_COLOR,
     )
-    embed.add_field(name="All-In Stake", value=money(stake), inline=True)
-    embed.add_field(name="Payout If It Hits", value=money(gross), inline=True)
-    embed.add_field(name="Chance", value=chance, inline=True)
-    embed.add_field(name="Casino Stack", value=money(house), inline=True)
+    embed.add_field(name="All-In", value=money(stake), inline=True)
+    embed.add_field(name="Pays If It Hits", value=money(gross), inline=True)
+    embed.add_field(name="Odds", value=chance, inline=True)
     embed.add_field(
         name="The Floor",
-        value=f"{SPECTATOR_HINT}\n\n🔒 Only {user_mention} can press the button.",
+        value=f"{SPECTATOR_HINT}\n🔒 Only {user_mention} can press the button.",
         inline=False,
     )
     return _footer(embed, "⚜ Royal Court Casino · all-in is final · public table")
@@ -109,26 +128,19 @@ def allin_result(
     """The big all-in result card."""
     title = "🎰 You Win Big" if won else "🎰 You Lose It All"
     color = config.GOLD_COLOR if won else config.RED_COLOR
-    net = gross - stake if won else -stake
     embed = discord.Embed(
         title=title,
         description=(
-            f"## {'💥 HIT' if won else '💀 MISS'}\n"
-            f"{user_mention} went all-in at **{number}×**. "
+            f"## {'💥 HIT' if won else '💀 MISS'} at {number}×\n"
             + (
-                f"The draw landed and the Casino pays **{money(gross)}**."
+                f"{user_mention} hit the draw — the Casino pays **{money(gross)}**."
                 if won
-                else "The draw missed and the wallet is empty — the Casino takes the pot."
+                else f"{user_mention} missed — the whole wallet goes to the house."
             )
         ),
         color=color,
     )
-    embed.add_field(name="Stake", value=money(stake), inline=True)
-    embed.add_field(name="Return", value=money(gross) if won else "—", inline=True)
-    embed.add_field(name="Net", value=f"{net:+,}", inline=True)
-    embed.add_field(name="Player Wallet", value=money(balance), inline=True)
-    embed.add_field(name="Casino Stack", value=money(house), inline=True)
-    embed.add_field(name="The Floor", value=SPECTATOR_HINT, inline=False)
+    _figures(embed, stake=stake, gross=gross, balance=balance, won=won)
     return _footer(embed, "⚜ Royal Court Casino · all-in is final · public table")
 
 
@@ -150,32 +162,24 @@ def slots_result(
     """The three-reel card. ``machine`` is the reel line, e.g. ``🍒 │ 🍋 │ 🍒``."""
     title = "🎰 SLOTS · You Win" if won else "🎰 SLOTS · No Match"
     color = config.GOLD_COLOR if won else config.RED_COLOR
-    net = gross - stake if won else -stake
     if won:
         story = (
-            f"{user_mention} lined up {result} — **{multiple}×** — and the Casino "
-            f"pays **{money(gross)}** across the table."
+            f"{user_mention} lined up **{result}** — **{multiple}×** — and the "
+            f"Casino pays **{money(gross)}**."
         )
     elif near_miss:
         story = (
-            f"{user_mention} hit {near_miss} — so close — but the reels have to "
-            "match three deep. The stake stays with the house."
+            f"{user_mention} hit **{near_miss}** — so close, but the reels have to "
+            "match three deep. The stake goes to the house."
         )
     else:
-        story = (
-            f"{user_mention} came up with {result}. The stake stays with the house."
-        )
+        story = f"{user_mention} came up with {result}. The stake goes to the house."
     embed = discord.Embed(
         title=title,
         description=f"## {machine}\n{story}",
         color=color,
     )
-    embed.add_field(name="Stake", value=money(stake), inline=True)
-    embed.add_field(name="Return", value=money(gross) if won else "—", inline=True)
-    embed.add_field(name="Net", value=f"{net:+,}", inline=True)
-    embed.add_field(name="Player Wallet", value=money(balance), inline=True)
-    embed.add_field(name="Casino Stack", value=money(house), inline=True)
-    embed.add_field(name="The Floor", value=SPECTATOR_HINT, inline=False)
+    _figures(embed, stake=stake, gross=gross, balance=balance, won=won)
     return _footer(
         embed,
         f"⚜ Royal Court Casino · three of a kind pays · {chance} odds · "
@@ -199,31 +203,27 @@ def roulette_result(
     """The wheel card. ``bet_label`` and ``odds_label`` describe the bet placed."""
     title = "🎡 ROULETTE · You Win" if won else "🎡 ROULETTE · You Lose"
     color = config.GOLD_COLOR if won else config.RED_COLOR
-    net = gross - stake if won else -stake
-    zero = " The green zero takes every outside bet — that is the house edge." if colour == "green" else ""
+    zero = (
+        "\nThe green zero takes every outside bet — that is the house edge."
+        if colour == "green"
+        else ""
+    )
     story = (
-        f"{user_mention} backed **{bet_label}** at {odds_label} and the ball "
-        f"landed on **{pocket}** ({colour}).\n"
+        f"{user_mention} backed **{bet_label}** at {odds_label} · ball landed on "
+        f"**{pocket} ({colour})**.\n"
         + (
             f"The Casino pays **{money(gross)}**."
             if won
-            else "The stake slides into the Casino's stack."
+            else "The stake goes to the house."
         )
         + zero
     )
     embed = discord.Embed(
         title=title,
-        description=f"## {pocket}\n{story}",
+        description=f"## {pocket} · {colour}\n{story}",
         color=color,
     )
-    embed.add_field(name="Bet", value=f"{bet_label} · {odds_label}", inline=True)
-    embed.add_field(name="Pocket", value=f"{pocket} ({colour})", inline=True)
-    embed.add_field(name="Stake", value=money(stake), inline=True)
-    embed.add_field(name="Return", value=money(gross) if won else "—", inline=True)
-    embed.add_field(name="Net", value=f"{net:+,}", inline=True)
-    embed.add_field(name="Player Wallet", value=money(balance), inline=True)
-    embed.add_field(name="Casino Stack", value=money(house), inline=True)
-    embed.add_field(name="The Floor", value=SPECTATOR_HINT, inline=False)
+    _figures(embed, stake=stake, gross=gross, balance=balance, won=won)
     return _footer(
         embed, "⚜ Royal Court Casino · single-zero wheel · 2.70% house edge · public table"
     )
@@ -256,27 +256,28 @@ def poker_table(*, user_mention: str, stake: int, game, footer: str) -> discord.
         icon = "👤" if seat.is_player else "🤖"
         state = " · folded" if seat.folded else " · all-in" if seat.all_in else ""
         stacks.append(f"{icon} **{seat.name}** — {money(seat.stack)}{state}")
-    log_lines = game.log[-4:]
+    log_lines = game.log[-3:]
     talk = "\n".join(f"• {line}" for line in log_lines) or "The table is quiet."
+    heading = "Showdown" if game.complete else game.street.title()
+    to_call = game.to_call(player)
+    if game.complete:
+        call_value = "—"
+    elif to_call:
+        call_value = money(to_call)
+    else:
+        call_value = "Check is free"
     embed = discord.Embed(
         title="♠️ TEXAS HOLD'EM · The High Table",
         description=(
-            f"## {game.street.title()}\n"
-            f"{user_mention} bought in for **{money(stake)}**.\n"
-            f"👀 **The table is watching.** Only the player can act; "
-            f"spectators can react 🎉 or 💀 after the result.\n\n"
+            f"## {heading} · pot {money(game.pot)}\n"
+            f"{user_mention} bought in for **{money(stake)}** · 👀 table is watching\n\n"
             f"{_poker_action(game)}"
         ),
         color=config.GOLD_COLOR,
     )
-    embed.add_field(name="The Board", value=_clip(board), inline=False)
+    embed.add_field(name="Board", value=_clip(board), inline=False)
     embed.add_field(name="Your Hand", value=_cards(player.hole), inline=True)
-    embed.add_field(name="Pot", value=money(game.pot), inline=True)
-    embed.add_field(
-        name="To Call",
-        value=money(game.to_call(player)) if game.to_call(player) else "Check is free",
-        inline=True,
-    )
+    embed.add_field(name="To Call", value=call_value, inline=True)
     embed.add_field(name="Stacks", value=_clip("\n".join(stacks)), inline=False)
     embed.add_field(name="Table Talk", value=_clip(talk), inline=False)
     embed.set_footer(text=footer)
@@ -321,10 +322,9 @@ def poker_result(
         ),
         color=color,
     )
-    embed.add_field(name="Returned Stack", value=money(final_stack), inline=True)
-    embed.add_field(name="Net", value=f"{net:+,}", inline=True)
+    embed.add_field(name="Returned", value=money(final_stack), inline=True)
+    embed.add_field(name="Net", value=signed_money(net), inline=True)
     embed.add_field(name="Wallet", value=money(balance), inline=True)
-    embed.add_field(name="Casino Stack", value=money(house), inline=True)
     embed.add_field(
         name="Winners",
         value=_clip(", ".join(winners) or "No chips won"),
@@ -341,30 +341,28 @@ def casino_floor(house: int) -> discord.Embed:
         title="🎰 The Casino · House & Floor",
         description=(
             f"## {money(house)}\n"
-            "The house is the counterparty for every wager. Lose and the house "
-            "grows; win and it pays you from its own stack. The floor is public, "
-            "so bring an audience."
+            "The house pays every win and keeps every loss. It can never pay out "
+            "more than it holds."
         ),
         color=config.GOLD_COLOR,
     )
     embed.add_field(
         name="Tonight on the floor",
         value=(
-            "🪙 **`/individual coinflip`** — call the coin · 50% win · 2×\n"
-            "🎰 **`/allin`** — whole wallet, one draw · 2–100×\n"
-            "🍒 **`/slots`** — three reels · three of a kind pays · up to 250×\n"
-            "🎡 **`/roulette`** — single-zero wheel · 35:1 straight up · 2.70% edge\n"
-            "🃏 **`/blackjack`** — hit or stand · natural pays 3:2\n"
-            "♠️ **`/poker`** — four-seat Texas Hold'em · 200 minimum"
+            "🪙 **`/individual coinflip`** · 50% win · 2×\n"
+            "🎰 **`/allin`** · whole wallet · 2–100×\n"
+            "🍒 **`/slots`** · three reels · up to 250×\n"
+            "🎡 **`/roulette`** · single zero · 35:1\n"
+            "🃏 **`/blackjack`** · hit or stand · 3:2\n"
+            "♠️ **`/poker`** · four seats · 200 minimum"
         ),
         inline=False,
     )
     embed.add_field(
         name="House rules",
         value=(
-            "Every wager is settled against this stack; no bet can mint credits. "
-            "A payout the house cannot cover is refused before the draw. "
-            "The house is topped up by an administrator with `/casino fund`."
+            "No bet can mint credits. A payout the house cannot cover is refused "
+            "before the draw. Admins top the house up with `/casino fund`."
         ),
         inline=False,
     )

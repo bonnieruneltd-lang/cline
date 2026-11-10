@@ -38,7 +38,8 @@ import factions as faction_rules
 from checks import admin_only
 from contract_limits import budget_allowed, limit_explanation, max_budget_for_funds
 from database import InsufficientFunds
-from gilbert.ai import GilbertAI
+from gilbert import memory
+from gilbert.ai import GilbertAI, clean_reply
 from gilbert.lookup import lookup_for, platform_block
 from gilbert.prompt import GILBERT_SYSTEM_PROMPT, classify_tier, contract_context
 from utils import account_autocomplete, account_emoji, money, parse_account
@@ -81,6 +82,19 @@ def _thread_name(name: str, faction: str = "union") -> str:
 def _member_is_admin(member: discord.abc.User) -> bool:
     perms = getattr(member, "guild_permissions", None)
     return bool(perms and perms.administrator)
+
+
+def _load_history(contract) -> list[dict]:
+    """The legacy ``contracts.history`` column as a clean turn list.
+
+    Kept as the fallback for cases opened before the durable transcript
+    existed; a corrupt or empty value is simply no history.
+    """
+    try:
+        raw = json.loads(contract["history"] or "[]")
+    except (KeyError, IndexError, TypeError, ValueError):
+        return []
+    return memory.normalise(raw)
 
 
 class ContractCloseView(discord.ui.View):
@@ -487,22 +501,34 @@ class Contract(commands.Cog):
         """Build Albert's ground-truth briefing, numbers included."""
         guild_id = contract["guild_id"]
         owner_id = self._owner_id(contract)
-        member = await self.db.get_faction_member(guild_id, owner_type, owner_id)
-        soldiers = await faction_rules.account_soldiers(
-            self.db, guild_id, owner_type, owner_id, nation
+        # Four independent reads for the membership and supply picture, then
+        # three for the treasury and quota: two waves instead of seven waits.
+        member, soldiers, donations_row, supply_row = await asyncio.gather(
+            self.db.get_faction_member(guild_id, owner_type, owner_id),
+            faction_rules.account_soldiers(
+                self.db, guild_id, owner_type, owner_id, nation
+            ),
+            self.db.fetchone(
+                """SELECT COALESCE(SUM(amount), 0) AS total
+                   FROM faction_donations
+                   WHERE guild_id = ? AND account_type = ? AND account_id = ?
+                     AND faction = 'crown'""",
+                (guild_id, owner_type, owner_id),
+            ),
+            self.db.fetchone(
+                """SELECT COALESCE(SUM(units_sold), 0) AS units
+                   FROM crown_sales
+                   WHERE guild_id = ? AND account_type = ? AND account_id = ?""",
+                (guild_id, owner_type, owner_id),
+            ),
         )
-        donations_row = await self.db.fetchone(
-            """SELECT COALESCE(SUM(amount), 0) AS total
-               FROM faction_donations
-               WHERE guild_id = ? AND account_type = ? AND account_id = ?
-                 AND faction = 'crown'""",
-            (guild_id, owner_type, owner_id),
-        )
-        supply_row = await self.db.fetchone(
-            """SELECT COALESCE(SUM(units_sold), 0) AS units
-               FROM crown_sales
-               WHERE guild_id = ? AND account_type = ? AND account_id = ?""",
-            (guild_id, owner_type, owner_id),
+        crown_balance, crown_reserved, contracts_used = await asyncio.gather(
+            self.db.get_crown_balance(guild_id),
+            self.db.crown_reserved(guild_id),
+            self.db.count_contracts_for_cycle(
+                guild_id, owner_type, owner_id, contract["cycle"],
+                faction=faction_rules.CROWN,
+            ),
         )
         faction = member["faction"] if member else None
         status = member["status"] if member else None
@@ -521,12 +547,9 @@ class Contract(commands.Cog):
             tier=classify_tier(budget),
             cycle=int(contract["cycle"]),
             account_balance=int(nation["balance"]) if nation else 0,
-            crown_balance=await self.db.get_crown_balance(guild_id),
-            crown_reserved=await self.db.crown_reserved(guild_id),
-            contracts_used=await self.db.count_contracts_for_cycle(
-                guild_id, owner_type, owner_id, contract["cycle"],
-                faction=faction_rules.CROWN,
-            ),
+            crown_balance=crown_balance,
+            crown_reserved=crown_reserved,
+            contracts_used=contracts_used,
             contract_limit=config.CONTRACTS_PER_CYCLE.get(owner_type, 1),
             soldiers=soldiers,
             faction=faction,
@@ -537,33 +560,138 @@ class Contract(commands.Cog):
             tax_reason=tax_reason,
         )
 
+    # -- persona memory ---------------------------------------------------
+    def _npc(self, contract) -> str:
+        """The memory slot this case talks to: ``gilbert`` or ``albert``."""
+        return self._agent_name(contract).lower()
+
+    async def _conversation(self, contract) -> list[dict]:
+        """This case's whole conversation, oldest first.
+
+        ``albert_memory`` is the source of truth: every turn is kept, so a case
+        negotiated over several days can still quote what was agreed on the
+        first night. Cases opened before the transcript existed carry their
+        story in ``contracts.history``; the first reply copies those turns
+        across so an upgrade does not erase an open negotiation.
+        """
+        try:
+            rows = await self.db.persona_turns(
+                guild_id=contract["guild_id"],
+                account_type=self._owner_type(contract),
+                account_id=self._owner_id(contract),
+                npc=self._npc(contract),
+                contract_id=contract["id"],
+            )
+        except Exception:  # pragma: no cover - memory must never block a reply
+            self.bot.logger.exception(
+                "Could not read memory for %s", contract["case_id"]
+            )
+            rows = []
+        if rows:
+            return [{"role": row["speaker"], "content": row["content"]} for row in rows]
+        legacy = _load_history(contract)
+        if legacy:
+            await self._remember(
+                contract, [(turn["role"], turn["content"]) for turn in legacy]
+            )
+        return legacy
+
+    async def _remember(self, contract, turns) -> None:
+        """Append new speaker lines to the durable transcript (best effort).
+
+        Losing a memory row costs context on the next turn; raising here would
+        cost the player their answer, so a failure is logged and swallowed. One
+        transaction for the reply's two lines keeps it to a single commit.
+        """
+        npc = self._npc(contract)
+        lines = [(role, content) for role, content in turns if content]
+        if not lines:
+            return
+        try:
+            async with self.db.transaction():
+                for role, content in lines:
+                    await self.db.add_persona_turn(
+                        guild_id=contract["guild_id"],
+                        account_type=self._owner_type(contract),
+                        account_id=self._owner_id(contract),
+                        npc=npc,
+                        speaker=role,
+                        content=content,
+                        contract_id=contract["id"],
+                    )
+        except Exception:  # pragma: no cover - defensive
+            self.bot.logger.exception(
+                "Could not store %d %s turn(s) for %s",
+                len(lines), npc, contract["case_id"],
+            )
+
+    async def _prior_recall(self, contract) -> Optional[str]:
+        """A short recall of earlier cases with this account, or ``None``."""
+        try:
+            rows = await self.db.persona_prior_turns(
+                guild_id=contract["guild_id"],
+                account_type=self._owner_type(contract),
+                account_id=self._owner_id(contract),
+                npc=self._npc(contract),
+                exclude_contract_id=contract["id"],
+                limit=config.CONTRACT_MEMORY_TURNS,
+            )
+        except Exception:  # pragma: no cover - memory must never block a reply
+            self.bot.logger.exception(
+                "Could not read prior memory for %s", contract["case_id"]
+            )
+            return None
+        if not rows:
+            return None
+        return memory.prior_block(
+            [{"role": row["speaker"], "content": row["content"]} for row in rows],
+            limit=config.CONTRACT_MEMORY_TURNS,
+            max_chars=config.CONTRACT_MEMORY_CHARS,
+        )
+
     async def _agent_reply(self, contract, channel, *, user_text: Optional[str] = None) -> None:
-        history: list[dict] = json.loads(contract["history"] or "[]")
+        history = await self._conversation(contract)
         if user_text:
             history.append({"role": "user", "content": user_text})
 
-        nation = await self._owner_row(contract)
-        member = await self._get_member(channel.guild, contract["requester_id"])
-        requester_name = member.display_name if member else f"user {contract['requester_id']}"
-
         owner_type = self._owner_type(contract)
         faction = self._contract_faction(contract)
+        guild_id = contract["guild_id"]
+        owner_id = self._owner_id(contract)
+
+        # Independent reads, so they go out together: the WAL read pool serves
+        # them concurrently instead of the reply waiting on seven round trips
+        # one after another before the provider is even called.
+        nation, member, prior = await asyncio.gather(
+            self._owner_row(contract),
+            self._get_member(channel.guild, contract["requester_id"]),
+            self._prior_recall(contract),
+        )
+        requester_name = member.display_name if member else f"user {contract['requester_id']}"
+
         if faction == faction_rules.CROWN:
             context = await self._crown_contract_context(
                 contract, nation, requester_name, owner_type
             )
             system_prompt = albert_prompt.ALBERT_SYSTEM_PROMPT
         else:
-            contracts_used = await self.db.count_contracts_for_cycle(
-                contract["guild_id"], owner_type, self._owner_id(contract),
-                contract["cycle"], faction=faction_rules.UNION,
-            )
-            union_contributions = await self.db.union_contributions(
-                contract["guild_id"], owner_type, self._owner_id(contract)
-            )
-            soldiers = await faction_rules.account_soldiers(
-                self.db, contract["guild_id"], owner_type,
-                self._owner_id(contract), nation,
+            (
+                contracts_used,
+                union_contributions,
+                soldiers,
+                union_balance,
+                union_member,
+            ) = await asyncio.gather(
+                self.db.count_contracts_for_cycle(
+                    guild_id, owner_type, owner_id,
+                    contract["cycle"], faction=faction_rules.UNION,
+                ),
+                self.db.union_contributions(guild_id, owner_type, owner_id),
+                faction_rules.account_soldiers(
+                    self.db, guild_id, owner_type, owner_id, nation
+                ),
+                self.db.get_union_balance(guild_id),
+                self.db.is_union_member(guild_id, owner_type, owner_id),
             )
             context = contract_context(
                 case_id=contract["case_id"],
@@ -576,12 +704,10 @@ class Contract(commands.Cog):
                 nation_balance=int(nation["balance"]) if nation else 0,
                 max_budget=max_budget_for_funds(int(nation["balance"])) if nation else 0,
                 status=contract["status"],
-                union_balance=await self.db.get_union_balance(contract["guild_id"]),
+                union_balance=union_balance,
                 contracts_used=contracts_used,
                 contract_limit=config.CONTRACTS_PER_CYCLE.get(owner_type, 1),
-                union_member=await self.db.is_union_member(
-                    contract["guild_id"], owner_type, self._owner_id(contract)
-                ),
+                union_member=union_member,
                 union_dues_paid=union_contributions["dues"],
                 union_donated=union_contributions["donations"],
                 union_committed=union_contributions["committed"],
@@ -593,6 +719,9 @@ class Contract(commands.Cog):
             {"role": "system", "content": system_prompt + "\n\n" + context},
             {"role": "system", "content": platform_block()},
         ]
+        # Earlier cases with this account: continuity, not authority.
+        if prior:
+            messages.append({"role": "system", "content": prior})
         # Minecraft mechanics go stale, and the realm is pinned to 1.20.1/Forge.
         # When the player's message leans on game knowledge, attach live results
         # as their own message so the rules above stay the authority. Any lookup
@@ -607,7 +736,14 @@ class Contract(commands.Cog):
                 live = None
             if live:
                 messages.append({"role": "system", "content": live})
-        messages.extend(history[-config.CONTRACT_HISTORY_LIMIT:])
+        messages.extend(
+            memory.build_window(
+                history,
+                recent=config.CONTRACT_CONTEXT_TURNS,
+                context_chars=config.CONTRACT_CONTEXT_CHARS,
+                digest_chars=config.CONTRACT_DIGEST_CHARS,
+            )
+        )
 
         try:
             async with channel.typing():
@@ -617,6 +753,9 @@ class Contract(commands.Cog):
                 "%s reply failed for %s", self._agent_name(contract), contract["case_id"]
             )
             reply = None
+        # A reply that starts with the persona's own name reads like a script:
+        # strip the echoed label (and any run of blank lines) before posting.
+        reply = clean_reply(reply, self._agent_name(contract))
 
         if not reply:
             if faction == faction_rules.CROWN:
@@ -638,6 +777,13 @@ class Contract(commands.Cog):
         await self.db.update_contract(
             contract["id"], history=json.dumps(history[-config.CONTRACT_HISTORY_LIMIT:])
         )
+        # The legacy column above is the compatibility window; the transcript
+        # below is the real memory, and it keeps every turn.
+        new_turns: list[tuple[str, str]] = []
+        if user_text:
+            new_turns.append(("user", user_text))
+        new_turns.append(("assistant", reply))
+        await self._remember(contract, new_turns)
         await self._send_chunks(channel, reply)
 
     async def _agent_intro(self, contract, channel) -> None:
@@ -1935,15 +2081,17 @@ class Contract(commands.Cog):
                         "discussion and inspection only; a new budget needs a new case."
                     )
                 await channel.send(note)
-                history = json.loads(contract["history"] or "[]")
-                history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"(Union Admin {interaction.user.display_name} reopened case "
-                            f"{contract['case_id']}.)"
-                        ),
-                    }
+                history = await self._conversation(contract)
+                reopened = {
+                    "role": "user",
+                    "content": (
+                        f"(Union Admin {interaction.user.display_name} reopened case "
+                        f"{contract['case_id']}.)"
+                    ),
+                }
+                history.append(reopened)
+                await self._remember(
+                    contract, [(reopened["role"], reopened["content"])]
                 )
                 await self.db.update_contract(
                     contract["id"], history=json.dumps(history[-config.CONTRACT_HISTORY_LIMIT:])

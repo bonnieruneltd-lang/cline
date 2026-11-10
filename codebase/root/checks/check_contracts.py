@@ -8,6 +8,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 
 import discord
@@ -689,17 +690,44 @@ async def main():
             self.followup = FakeResp()
 
     class EchoAI:
-        """Replies with the turn it was given, so histories can be compared."""
+        """Replies with the turn it was given, so histories can be compared.
 
-        def __init__(self, delay=0.0):
+        ``expect_concurrent`` turns the timing test into a *gate*: each call
+        waits until that many calls are in flight (or until a short deadline
+        passes), so a run that really does answer negotiations in parallel
+        reaches the peak deterministically instead of hoping the scheduler
+        lines twenty tasks up. A global lock would never reach it, and the
+        deadline keeps a serialised implementation from hanging the suite.
+        """
+
+        def __init__(self, delay=0.0, expect_concurrent=0, gate_timeout=2.0):
             self.delay = delay
+            self.expect_concurrent = int(expect_concurrent or 0)
+            self.gate_timeout = gate_timeout
+            self.gate = asyncio.Event()
+            self.gate_deadline = None
             self.inflight = 0
             self.peak = 0
+
+        async def _wait_for_gate(self) -> None:
+            if not self.expect_concurrent or self.inflight >= self.expect_concurrent:
+                self.gate.set()
+                return
+            if self.gate_deadline is None:
+                self.gate_deadline = time.monotonic() + self.gate_timeout
+            remaining = self.gate_deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                await asyncio.wait_for(self.gate.wait(), remaining)
+            except asyncio.TimeoutError:
+                pass
 
         async def complete(self, messages):
             self.inflight += 1
             self.peak = max(self.peak, self.inflight)
             try:
+                await self._wait_for_gate()
                 if self.delay:
                     await asyncio.sleep(self.delay)
                 return f"echo:{messages[-1]['content']}"
@@ -929,7 +957,7 @@ async def main():
 
     # Twenty negotiations talking at the same time: one lock per thread, so the
     # AI is entered concurrently, and no history leaks across cases.
-    talk_ai = EchoAI(delay=0.03)
+    talk_ai = EchoAI(delay=0.03, expect_concurrent=20)
     burst_cog.ai = talk_ai
     talk_spaces = []
     for i in range(20):
@@ -964,6 +992,107 @@ async def main():
           [len(space.sent) for space in talk_spaces])
     check("no turn leaks into another negotiation",
           not foreign and len(talk_rows) == 20, foreign[:3])
+
+    # --- memory: a long case does not forget its own beginning --------------
+    # Storage keeps every turn; the prompt gets a digest of the older ones. This
+    # is the difference between "we agreed the east road on Tuesday" and a
+    # representative who contradicts himself on Thursday.
+    class RecordingAI:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, messages):
+            self.calls.append(messages)
+            return f"noted:{messages[-1]['content']}"
+
+    memory_ai = RecordingAI()
+    burst_cog.ai = memory_ai
+    long_space = SpaceThread(9400, burst_guild)
+    long_requester = Person(700, "Long Talker")
+    long_space.members.add(long_requester.id)
+    long_id = await db.create_contract(
+        guild_id=5, case_id="UN-MEMORY-001", nation_id=burst_nations[1],
+        nation_name="Burst 01", nation_tag="MEMO", requester_id=long_requester.id,
+        cycle=1, budget=1_000, proposal="east road", owner_type="nation",
+        owner_id=burst_nations[1],
+    )
+    await db.set_contract_thread(long_id, long_space.id)
+    burst_cog._thread_ids.add(long_space.id)
+    for index in range(26):
+        await burst_cog.on_message(SimpleNamespace(
+            author=long_requester, guild=burst_guild,
+            content=("first message: the east road, paid on delivery" if index == 0
+                     else f"message {index}"),
+            channel=long_space, id=10_000 + index, bot=False,
+        ))
+    transcript = await db.persona_turns(
+        guild_id=5, account_type="nation", account_id=burst_nations[1],
+        npc="gilbert", contract_id=long_id,
+    )
+    check("every turn of a long case is stored", len(transcript) == 52, len(transcript))
+    check("the stored transcript keeps the opening line",
+          "first message" in transcript[0]["content"], transcript[0]["content"][:40])
+    last_prompt = memory_ai.calls[-1]
+    check("an over-long case still sends a digest",
+          any(m["role"] == "system" and m["content"].startswith(
+              "EARLIER IN THIS NEGOTIATION") for m in last_prompt),
+          [m["content"][:40] for m in last_prompt if m["role"] == "system"])
+    check("the digest remembers the opening of the case",
+          any("first message" in m["content"] for m in last_prompt))
+    check("the verbatim window stays bounded",
+          sum(1 for m in last_prompt if m["role"] in ("user", "assistant"))
+          == 16,
+          sum(1 for m in last_prompt if m["role"] in ("user", "assistant")))
+    check("the legacy history column still works for other code",
+          (await db.get_contract(long_id))["history"].count("message") >= 30)
+
+    # A second case with the same nation is briefed with what happened in the
+    # first one: continuity across negotiations, never the current transcript.
+    prior_space = SpaceThread(9401, burst_guild)
+    prior_requester = Person(701, "Same Nation")
+    prior_space.members.add(prior_requester.id)
+    prior_id = await db.create_contract(
+        guild_id=5, case_id="UN-MEMORY-002", nation_id=burst_nations[1],
+        nation_name="Burst 01", nation_tag="MEMO", requester_id=prior_requester.id,
+        cycle=2, budget=1_000, proposal="west road", owner_type="nation",
+        owner_id=burst_nations[1],
+    )
+    await db.set_contract_thread(prior_id, prior_space.id)
+    burst_cog._thread_ids.add(prior_space.id)
+    await burst_cog.on_message(SimpleNamespace(
+        author=prior_requester, guild=burst_guild,
+        content="a brand new question", channel=prior_space, id=11_000, bot=False,
+    ))
+    new_prompt = memory_ai.calls[-1]
+    recall = [m["content"] for m in new_prompt
+              if m["role"] == "system" and m["content"].startswith("PRIOR EXCHANGES")]
+    check("a new case recalls the earlier one", bool(recall), [m["content"][:40] for m in new_prompt])
+    check("the recall quotes the earlier case",
+          bool(recall) and "message 25" in recall[0], (recall or [""])[0][:80])
+    check("the recall does not carry the current case",
+          bool(recall) and "a brand new question" not in recall[0])
+    # A party that has never negotiated before opens with a clean slate.
+    fresh_nation = await db.create_nation(5, "Fresh Start", 702)
+    await db.add_balance("nations", fresh_nation, 50_000)
+    fresh_space = SpaceThread(9402, burst_guild)
+    fresh_member = Person(703, "Newcomer")
+    fresh_space.members.add(fresh_member.id)
+    fresh_id = await db.create_contract(
+        guild_id=5, case_id="UN-MEMORY-003", nation_id=fresh_nation,
+        nation_name="Fresh Start", nation_tag="NEW", requester_id=fresh_member.id,
+        cycle=1, budget=1_000, proposal="first ever deal", owner_type="nation",
+        owner_id=fresh_nation,
+    )
+    await db.set_contract_thread(fresh_id, fresh_space.id)
+    burst_cog._thread_ids.add(fresh_space.id)
+    await burst_cog.on_message(SimpleNamespace(
+        author=fresh_member, guild=burst_guild,
+        content="our very first contract", channel=fresh_space, id=11_001, bot=False,
+    ))
+    check("a first-time party gets no recall block",
+          not any(m["content"].startswith("PRIOR EXCHANGES")
+                  for m in memory_ai.calls[-1]),
+          [m["content"][:30] for m in memory_ai.calls[-1] if m["role"] == "system"])
 
     # Discord rate limits: a refused thread falls back to a channel ticket, and
     # when both routes are limited the request fails cleanly with no row.

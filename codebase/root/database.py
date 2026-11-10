@@ -188,7 +188,8 @@ CREATE TABLE IF NOT EXISTS settings (
     last_cycle_at             TEXT,
     next_cycle_at             TEXT,
     contract_board_channel_id INTEGER,
-    union_commit_channel_id   INTEGER
+    union_commit_channel_id   INTEGER,
+    mc_server_ip              TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pending_draws (
@@ -217,6 +218,12 @@ CREATE TABLE IF NOT EXISTS pending_creations (
 
 CREATE INDEX IF NOT EXISTS idx_tx_guild   ON transactions (guild_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_tx_account ON transactions (account_type, account_id, ts DESC);
+-- Union contributions ("how much has this account paid in?") are read on every
+-- negotiation turn and every payout. Without the kind in the key SQLite walks
+-- every row the account ever wrote; with it, only the union_tax/donate/commit
+-- rows are touched.
+CREATE INDEX IF NOT EXISTS idx_tx_union
+    ON transactions (guild_id, account_type, account_id, kind);
 CREATE INDEX IF NOT EXISTS idx_nation_kg  ON nations (kingdom_id);
 CREATE INDEX IF NOT EXISTS idx_creations  ON pending_creations (guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_draws      ON pending_draws (guild_id, status);
@@ -515,14 +522,18 @@ CREATE TABLE IF NOT EXISTS faction_donations (
 CREATE INDEX IF NOT EXISTS idx_faction_donations_account
     ON faction_donations (guild_id, account_type, account_id, id DESC);
 
--- Persistent Albert conversation memory. State lives in the tables above; this
--- only keeps the last exchanges so the NPC remembers what was said.
+-- Persistent persona memory: one row per speaker line, kept forever. The
+-- ``contract_id`` ties a line to the negotiation it came from, so a case can
+-- replay its own transcript while the briefing also carries a short recall of
+-- earlier cases with the same account. State still lives in the tables above;
+-- this only remembers what was said.
 CREATE TABLE IF NOT EXISTS albert_memory (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id     INTEGER NOT NULL,
     account_type TEXT    NOT NULL CHECK (account_type IN ('nation', 'kingdom')),
     account_id   INTEGER NOT NULL,
     npc          TEXT    NOT NULL DEFAULT 'albert',
+    contract_id  INTEGER,
     speaker      TEXT    NOT NULL,
     content      TEXT    NOT NULL,
     created_at   TEXT    NOT NULL
@@ -628,6 +639,10 @@ _MIGRATIONS = [
     ("settings", "contract_cycle", "INTEGER NOT NULL DEFAULT 1"),
     ("settings", "contract_board_channel_id", "INTEGER"),
     ("settings", "union_commit_channel_id", "INTEGER"),
+    # The Minecraft server IP the admin registered in Discord. The redemption
+    # API compares the connecting address against it, so /api/redeem is refused
+    # until an admin sets it (security gate added 2026-11-07).
+    ("settings", "mc_server_ip", "TEXT"),
     ("contracts", "owner_type", "TEXT NOT NULL DEFAULT 'nation'"),
     ("contracts", "owner_id", "INTEGER"),
     ("contracts", "claimed_by", "INTEGER"),
@@ -640,6 +655,10 @@ _MIGRATIONS = [
     ("contracts", "final_claimed", "INTEGER NOT NULL DEFAULT 0"),
     ("orders", "union_discount", "INTEGER NOT NULL DEFAULT 0"),
     ("albert_memory", "npc", "TEXT NOT NULL DEFAULT 'albert'"),
+    # Which negotiation a remembered line belongs to. Rows written before this
+    # column existed cannot be attributed, so they stay NULL and are simply
+    # never replayed as a case transcript (they are still readable).
+    ("albert_memory", "contract_id", "INTEGER"),
     # Contracts are funded by the faction they were requested from. Every row
     # that predates this column was a Workers' Union case, hence the default.
     ("contracts", "faction", "TEXT NOT NULL DEFAULT 'union'"),
@@ -720,6 +739,14 @@ class Database:
         # from the nation columns before owner-scoped cycle limits are used.
         await self.conn.execute(
             "UPDATE contracts SET owner_id = nation_id WHERE owner_id IS NULL"
+        )
+
+        # Indexes on migrated columns must be created *after* the ALTER TABLE
+        # loop above: an older database has the table but not the column yet,
+        # and creating the index in SCHEMA would fail on that database.
+        await self.conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_albert_memory_contract
+                   ON albert_memory (contract_id, id)"""
         )
 
         # Existing funded contracts were paid to their requester before the
@@ -1305,6 +1332,17 @@ class Database:
         await self.execute(
             "UPDATE settings SET union_commit_channel_id = ? WHERE guild_id = ?",
             (channel_id, guild_id),
+        )
+
+    async def set_server_ip(self, guild_id: int, ip: Optional[str]) -> None:
+        """Register (or clear, with ``None``) the Minecraft server IP for a guild.
+
+        The redemption API refuses to touch an order until this is set, so the
+        lookup helper is read straight from ``get_settings``.
+        """
+        await self.get_settings(guild_id)
+        await self.execute(
+            "UPDATE settings SET mc_server_ip = ? WHERE guild_id = ?", (ip, guild_id)
         )
 
     async def set_cycle_times(self, guild_id: int, last: Optional[str], nxt: Optional[str]) -> None:
@@ -2266,6 +2304,97 @@ class Database:
             (guild_id, account_type, account_id, npc, int(limit)),
         )
         return list(reversed(rows))
+
+    # -- full negotiation transcripts (storage is cheap, forgetting is not) --
+    async def add_persona_turn(
+        self,
+        *,
+        guild_id: int,
+        account_type: str,
+        account_id: int,
+        npc: str,
+        speaker: str,
+        content: str,
+        contract_id: Optional[int] = None,
+    ) -> None:
+        """Append one speaker line to a persona's memory.
+
+        Every turn of every negotiation is kept; nothing is pruned here. The
+        prompt window is built from these rows by ``gilbert.memory``, so a case
+        that runs for days can still quote what was agreed on the first night.
+        """
+        text = (content or "").strip()
+        if not text:
+            return
+        await self.execute(
+            """INSERT INTO albert_memory
+               (guild_id, account_type, account_id, npc, contract_id, speaker,
+                content, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                int(guild_id),
+                account_type,
+                int(account_id),
+                npc,
+                int(contract_id) if contract_id is not None else None,
+                speaker,
+                text,
+                now_iso(),
+            ),
+        )
+
+    async def persona_turns(
+        self,
+        *,
+        guild_id: int,
+        account_type: str,
+        account_id: int,
+        npc: str,
+        contract_id: Optional[int] = None,
+        limit: int = 400,
+    ) -> list[aiosqlite.Row]:
+        """One case's transcript, oldest first.
+
+        ``limit`` keeps the read bounded: a pathological case cannot pull tens
+        of thousands of rows into memory just to build a prompt.
+        """
+        rows = await self.fetchall(
+            """SELECT speaker, content, created_at FROM albert_memory
+               WHERE guild_id = ? AND account_type = ? AND account_id = ?
+                 AND npc = ? AND contract_id = ?
+               ORDER BY id DESC LIMIT ?""",
+            (
+                int(guild_id), account_type, int(account_id), npc,
+                int(contract_id) if contract_id is not None else None,
+                max(1, int(limit)),
+            ),
+        )
+        return list(reversed(rows))
+
+    async def persona_prior_turns(
+        self,
+        *,
+        guild_id: int,
+        account_type: str,
+        account_id: int,
+        npc: str,
+        exclude_contract_id: Optional[int] = None,
+        limit: int = 8,
+    ) -> list[aiosqlite.Row]:
+        """The tail of earlier cases with the same account, newest last."""
+        sql = """SELECT speaker, content, created_at, contract_id
+                   FROM albert_memory
+                  WHERE guild_id = ? AND account_type = ? AND account_id = ?
+                    AND npc = ? AND contract_id IS NOT NULL"""
+        params: list[Any] = [int(guild_id), account_type, int(account_id), npc]
+        if exclude_contract_id is not None:
+            sql += " AND contract_id != ?"
+            params.append(int(exclude_contract_id))
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        rows = await self.fetchall(sql, tuple(params))
+        return list(reversed(rows))
+
 
     # ------------------------------------------------------------------
     # The Casino: house balance

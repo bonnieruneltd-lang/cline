@@ -26,6 +26,138 @@ Test:    the check that proves it (see "Verification" at the end).
 
 ---
 
+## The negotiators forgot their own case — 2026-11-10
+
+### `contracts.history` was a sliding window with no floor
+
+**Symptom.** A negotiation that ran past forty messages began contradicting
+itself: Gilbert re-asked for a collection point already agreed, quoted a
+quantity the party had corrected, or accepted a "no, not that farm" restriction
+for the third time. Nothing in the logs looked wrong — the model was answering
+the prompt it was given. A second case with the same nation opened as if the two
+had never met.
+
+**Cause.** `_agent_reply()` built the prompt from `contracts.history` and stored
+back only `history[-CONTRACT_HISTORY_LIMIT:]` (40 messages). Every turn older
+than that was destroyed at write time, so the earliest — and most load-bearing —
+part of the conversation was gone first. `albert_memory` existed in the schema
+with `append_albert_memory`/`list_albert_memory`, but nothing called it: the
+memory feature was schema without a caller.
+
+**Impact.** Quality, not money: quotas, approvals and claims never read the
+transcript. But a contract is negotiated in words, and a representative who
+forgets the words wastes a player's evening and re-litigates settled points.
+
+**Fix.**
+- **Full transcript, kept forever.** `Database.add_persona_turn()` appends every
+  speaker line to `albert_memory` with the new `contract_id` column (migration
+  `("albert_memory", "contract_id", "INTEGER")`, index created after the `ALTER`
+  in `migrate()` so an older database upgrades cleanly). Nothing is pruned.
+- **Bounded prompt, deterministic digest.** `gilbert/memory.py` builds what the
+  model sees: the newest `CONTRACT_CONTEXT_TURNS` (16) turns verbatim plus one
+  system block condensing everything older, capped by `CONTRACT_CONTEXT_CHARS`
+  (8,000) / `CONTRACT_DIGEST_CHARS` (2,000). The digest is built in-process, so
+  it cannot fail, cost a provider call or time out; it clips on a word boundary
+  and falls back to a short header rather than dropping memory entirely.
+- **Cross-case recall.** `Database.persona_prior_turns()` (excluding the current
+  contract) feeds `CONTRACT_MEMORY_TURNS` (8) lines of earlier cases into a
+  `PRIOR EXCHANGES WITH THIS ACCOUNT` block. `contracts.history` is still written
+  as the compatibility window; a case opened before this change is backfilled
+  into the transcript on its next reply, so an open negotiation never loses its
+  story mid-upgrade.
+- **Prompts own the rule.** Both personas are told the two blocks are memory, not
+  authority: figures and quotas still come from the briefing.
+
+**Test.** `check_database.py` (append-only storage, per-persona isolation,
+bounded reads, prior recall excludes the current case, migration index present),
+`check_contracts.py` (a 26-message case stores 52 turns, still sends a digest
+containing its opening line, keeps the verbatim window at 16, and a second case
+with the same nation is briefed with the first), `check_gilbert.py` (the
+window/digest/prior rules and their caps).
+
+## A dead provider cost twenty slow replies — 2026-11-10
+
+### Every waiter ran its own retry ladder
+
+**Symptom.** When the chat endpoint was down or misconfigured, replies took the
+full timeout before the fallback line appeared, and the provider saw dozens of
+doomed requests per outage.
+
+**Cause.** Each `GilbertAI.complete()` retried independently (`CHATBOT_RETRIES`,
+default 2) with a fixed exponential delay. With twenty negotiations open that is
+sixty requests in lockstep, all backing off on the same schedule.
+
+**Fix.** A per-endpoint failure breaker (`BREAKER_FAILURES` = 3,
+`CHATBOT_BREAKER_SECONDS`, default 20s): after three consecutive hard failures
+(transport, 401/402/404/5xx) calls return `None` immediately so the caller posts
+its fallback and the provider is left alone; 429 never opens it, because a busy
+provider is not a broken one. The exponential branch is jittered ±25%
+(`_retry_delay`) so retries spread out. `reset_breakers()` runs on shutdown.
+
+**Test.** `check_load.py` (jitter band, cap, growth) and `check_gilbert.py`
+(jitter is real, bounded).
+
+---
+
+## The briefing waited on seven round trips — 2026-11-10
+
+**Symptom.** Every reply sat idle for several milliseconds before the provider
+was called, and the cost scaled with the number of open negotiations.
+
+**Cause.** `_agent_reply()` and `_crown_contract_context()` awaited independent
+reads one after another (owner row, member, quota, contributions, soldiers,
+treasury, membership; ten for a Crown case) even though the WAL read pool can
+serve four at a time. `union_contributions()` also walked every ledger row the
+account ever wrote, because `transactions` had no index carrying `kind`.
+
+**Fix.** `asyncio.gather` in two waves (owner/member/prior recall, then the fact
+reads). Same values, same order of use, no new query. A composite index
+`idx_tx_union (guild_id, account_type, account_id, kind)` makes the contribution
+sum a seek: `EXPLAIN QUERY PLAN` reports `SEARCH transactions USING INDEX
+idx_tx_union`, and 20 reads of the method drop from 16.3 ms to 6.1 ms on a
+60k-row test ledger.
+
+**Test.** `check_contracts.py` — every briefing assertion (treasury, quota,
+soldiers, membership, recall) still passes, and the twenty-negotiation burst is
+gated so the parallel path is asserted deterministically rather than by timing
+luck.
+
+## Echoed persona labels — 2026-11-10
+
+**Symptom.** Occasionally a message arrived as `Gilbert: Right then, …` under
+Gilbert's own name, or with three blank lines in the middle.
+
+**Cause.** The transcript is fed to the model as `user:`/`assistant:` lines, so
+a model can imitate the label; nothing cleaned the reply before posting.
+
+**Fix.** `clean_reply()` in `gilbert/ai.py` strips a leading echoed label (only
+the personas' names, `Assistant`/`AI`), squeezes blank runs, and returns `None`
+for an empty body so the caller's fallback line is used. Applied once in
+`_agent_reply()`.
+
+**Test.** `check_gilbert.py` (label stripped, `Case UN-1-001:` keeps its colon,
+blank runs squeezed, empty is `None`).
+
+## A flaky concurrency assertion — 2026-11-10
+
+**Symptom.** `check_contracts.py` failed on the deployed tree:
+`FAIL  twenty negotiations are answered at once  12`, so the suite reported
+**23/24** even though twenty replies were genuinely in flight.
+
+**Cause.** `EchoAI.complete()` slept 30 ms and the check asserted `peak == 20`.
+Peak concurrency is a scheduling artefact: each of the twenty tasks does ~2.7 ms
+of database work before entering the model, so on a slower host the first calls
+finish before the last ones arrive. Twelve overlapping calls proves there is no
+global lock; the assertion measured machine speed, not the property.
+
+**Fix.** `EchoAI(expect_concurrent=20)` uses a gate: calls wait until twenty are
+in flight (2 s deadline shared by all waiters). A parallel implementation
+reaches the peak deterministically; a serialised one never does, and the
+deadline keeps that failure fast instead of hanging the suite.
+
+**Test.** `check_contracts.py` itself — green on this checkout and on the pulled
+deployed tree.
+
 ## Every read queued behind the one writer — 2026-11-07
 
 ### One connection and one lock serialised the whole server
@@ -1826,14 +1958,15 @@ Every script builds its own throwaway SQLite database in a temp directory. None
 of them read `royal_bank.db`, so the live file is never touched.
 `check_poker.py` needs no database at all: `poker.py` is pure.
 
-All 23 scripts pass as of 2026-11-07, against the working copy. When you fix a
+All 24 scripts pass as of 2026-11-10, against the working copy and against a
+pulled copy of the deployed tree. When you fix a
 bug, add its check here — a fix without a check is how the
 transaction-isolation defect survived this long.
 
 | Area | Checks |
 | --- | --- |
 | Money core | transaction rollback, debit guard, transfer atomicity, `setbalance` fresh-delta atomicity, ledger reconciliation |
-| Contracts | leverage ladder, claim idempotency, double click, concurrent claim, 75%-until-release, closed contract, legacy refund, atomic quota, global case IDs, approval re-read, short treasury, midway rollback |
+| Contracts | leverage ladder, claim idempotency, double click, concurrent claim, 75%-until-release, closed contract, legacy refund, atomic quota, global case IDs, approval re-read, short treasury, midway rollback, full transcript + bounded window + prior-case recall, gated twenty-way concurrency |
 | Draws | approval race, ex-member re-check, one-shot status |
 | Shop | pricing maths, member vs non-member, mixed cart, shulker fee, double redemption (`check_shop.py`; the earlier "pricing maths" claim was only `check_logic.py`'s constants — no script drove the checkout) |
 | Union | treasury guards, membership lifecycle, cleanup on delete, dues, donations, command surface, commitment approval donation |
@@ -1849,4 +1982,4 @@ transaction-isolation defect survived this long.
 | Runner | summary required; bare exit/ERROR is a failure |
 | Daily sync | endpoint/value encoding, idempotent DDL, guide source and fallback, `guild_id`, run-on-start switches, disabled without credentials |
 
-All 23 scripts pass. When you add a check, add it to this table.
+All 24 scripts pass. When you add a check, add it to this table.

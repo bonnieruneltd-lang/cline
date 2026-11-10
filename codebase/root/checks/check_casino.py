@@ -440,6 +440,9 @@ async def cog_checks():
     check("the hand is recorded as open", len(await db.all_open_blackjack_hands()) == 1)
     check("the deal hides the hole card", "🂠" in i.text(), i.text())
     check("the table invites spectators", "table is watching" in i.text(), i.text())
+    check("the blackjack table stays to two rows",
+          [field.name for field in i.sent[-1].fields] == ["Dealer", "Your Hand"],
+          [field.name for field in i.sent[-1].fields])
 
     # Rebuild the view from the recorded hand to drive the buttons.
     hand_row = (await db.all_open_blackjack_hands())[0]
@@ -624,6 +627,76 @@ async def public_checks():
     await db.close()
 
 
+def card_layout_checks():
+    """Every casino card keeps the same short shape.
+
+    The UI was simplified on purpose: one headline, three figures
+    (Bet / Payout / Wallet) and one spectator line. These assertions pin that
+    shape so a future edit cannot quietly grow the cards again.
+    """
+    import gambling_ui
+
+    base = dict(
+        user_mention="<@10>", stake=1_000, gross=2_000, balance=5_000,
+        house=1_000_000,
+    )
+    cards = {
+        "coinflip": gambling_ui.coinflip_result(
+            **base, called="heads", landed="heads", won=True
+        ),
+        "all-in": gambling_ui.allin_result(**base, number=5, won=True),
+        "slots": gambling_ui.slots_result(
+            **base, machine="🍒 │ 🍒 │ 🍒", result="three Cherries",
+            near_miss=None, won=True, multiple=50, chance="1 in 576",
+            edge="6.4%",
+        ),
+        "roulette": gambling_ui.roulette_result(
+            **base, bet_label="Black", odds_label="1:1", pocket=17,
+            colour="black", won=True,
+        ),
+    }
+    for name, card in cards.items():
+        labels = [field.name for field in card.fields]
+        check(f"the {name} card keeps three figures",
+              labels == ["Bet", "Payout", "Wallet", "The Floor"], labels)
+        check(f"the {name} card leaves the house stack to /casino balance",
+              not any("Casino" in label for label in labels), labels)
+        check(f"the {name} card has a one-line footer",
+              "\n" not in (card.footer.text or ""), card.footer.text)
+        check(f"the {name} card still invites spectators",
+              "table is watching" in card.fields[-1].value, card.fields[-1].value)
+    win = cards["coinflip"]
+    check("a win card shows a signed credit net",
+          "net +1,000 credits" in win.fields[1].value, win.fields[1].value)
+    loss = gambling_ui.coinflip_result(
+        **base, called="heads", landed="tails", won=False
+    )
+    check("a loss card shows a signed credit net",
+          "net -1,000 credits" in loss.fields[1].value, loss.fields[1].value)
+    check("a loss card pays nothing", loss.fields[1].value.startswith("—"),
+          loss.fields[1].value)
+
+    confirm = gambling_ui.allin_confirm(
+        user_mention="<@10>", number=5, stake=1_000, gross=5_000,
+        chance="1 in 5.5", house=1_000_000,
+    )
+    check("the all-in confirmation asks three questions",
+          [field.name for field in confirm.fields]
+          == ["All-In", "Pays If It Hits", "Odds", "The Floor"],
+          [field.name for field in confirm.fields])
+
+    floor = gambling_ui.casino_floor(1_000_000)
+    games = floor.fields[0].value
+    check("the floor lists every game in one field",
+          all(command in games for command in (
+              "/individual coinflip", "/allin", "/slots", "/roulette",
+              "/blackjack", "/poker",
+          )), games)
+    check("the floor keeps the house rules to one field",
+          len([f for f in floor.fields if f.name == "House rules"]) == 1,
+          [f.name for f in floor.fields])
+
+
 async def wallet_lifecycle_checks():
     """Deleting a wallet during or before a hand must never resurrect it."""
     db = Database(os.path.join(tempfile.mkdtemp(), "lifecycle.db"))
@@ -714,6 +787,8 @@ def main():
     asyncio.run(cog_checks())
     print("-- gambling is visible in the channel --")
     asyncio.run(public_checks())
+    print("-- every casino card keeps the same short shape --")
+    card_layout_checks()
     print(f"\nFAILURES: {len(fails)}")
     if fails:
         for f in fails:

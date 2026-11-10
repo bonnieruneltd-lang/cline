@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
-from gilbert.ai import GilbertAI, provider_hint, reply_text  # noqa: E402
-from gilbert import lookup  # noqa: E402
+from gilbert.ai import GilbertAI, clean_reply, provider_hint, reply_text  # noqa: E402
+from gilbert import lookup, memory  # noqa: E402
 from gilbert.prompt import (  # noqa: E402
     GILBERT_SYSTEM_PROMPT,
     classify_tier,
@@ -271,6 +271,73 @@ with patch.dict(os.environ, {"TAVILY_API_KEY": "", "LOOKUP_ENABLED": "true"}, cl
 with patch.dict(os.environ, {"TAVILY_API_KEY": "k", "LOOKUP_ENABLED": "true"}, clear=False):
     check("lookup_for skips non-mechanics messages",
           asyncio.run(lookup.lookup_for("please lower the price")) is None)
+
+# --- negotiation memory -----------------------------------------------------
+# Storage keeps every turn; the model gets a bounded window. These checks pin
+# the split: what survives verbatim, what is condensed, and what is never sent.
+turns = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"line {i}"}
+         for i in range(30)]
+window = memory.build_window(turns, recent=6)
+check("the window keeps only the newest turns verbatim",
+      [m["content"] for m in window if m["role"] != "system"] == [f"line {i}" for i in range(24, 30)],
+      window[-1])
+check("older turns are condensed into one system block",
+      window[0]["role"] == "system" and window[0]["content"].startswith("EARLIER IN THIS NEGOTIATION"),
+      window[0]["role"])
+check("the digest keeps the first thing said",
+      "line 0" in window[0]["content"])
+check("the digest labels the speaker",
+      "- user: line 0" in window[0]["content"])
+check("a short conversation has no digest",
+      all(m["role"] != "system" for m in memory.build_window(turns[:3], recent=6)))
+check("an empty conversation is empty", memory.build_window([]) == [])
+check("malformed turns are skipped",
+      memory.build_window([{"role": "user"}, "junk", {"nope": 1}, {"role": "user", "content": "hi"}])
+      == [{"role": "user", "content": "hi"}])
+check("unknown roles are treated as the player's turn",
+      memory.build_window([{"role": "system", "content": "x"}]) == [{"role": "user", "content": "x"}])
+check("whitespace is collapsed",
+      memory.build_window([{"role": "user", "content": "  a\n\n b  "}])[0]["content"] == "a b")
+long_window = memory.build_window(turns, recent=6, context_chars=200)
+check("the window respects its character budget",
+      sum(len(m["content"]) for m in long_window) <= 200,
+      sum(len(m["content"]) for m in long_window))
+check("budget pressure keeps the newest turn",
+      long_window[-1]["content"] == "line 29", long_window[-1])
+check("budget pressure still keeps a digest",
+      long_window[0]["role"] == "system", long_window[0]["role"])
+check("a single giant turn is clipped",
+      len(memory.build_window([{"role": "user", "content": "x" * 5000}])[0]["content"]) <= memory.TURN_CHARS)
+check("the digest never splits a word",
+      all(not line.endswith(("x", "y")) or len(line) < memory.DIGEST_LINE_CHARS
+          for line in (memory.digest([{"role": "user", "content": "word " * 200}]) or "").splitlines()[1:]))
+check("the digest honours a tiny cap",
+      len(memory.digest(turns, max_chars=120) or "") <= 120)
+prior = memory.prior_block([{"role": "user", "content": f"old {i}"} for i in range(12)], limit=4)
+check("prior recall keeps only the tail", "old 11" in prior and "old 0" not in prior)
+check("prior recall is labelled",
+      prior.startswith("PRIOR EXCHANGES WITH THIS ACCOUNT"))
+check("no prior turns means no block", memory.prior_block([]) is None)
+check("Gilbert is told the memory blocks are not authority",
+      "are your own notes" in GILBERT_SYSTEM_PROMPT)
+check("Albert is told the memory blocks are not the record",
+      "your own memory rather than the record" in " ".join(albert_prompt.ALBERT_SYSTEM_PROMPT.split()))
+
+# --- reply hygiene ----------------------------------------------------------
+check("an echoed persona label is stripped",
+      clean_reply("Gilbert: hello", "Gilbert") == "hello", clean_reply("Gilbert: hello", "Gilbert"))
+check("the label is stripped even without a speaker hint",
+      clean_reply("Albert — hello") == "hello", clean_reply("Albert — hello"))
+check("a case ID keeps its colon",
+      clean_reply("Case UN-1-001: hello") == "Case UN-1-001: hello")
+check("blank runs are squeezed", clean_reply("a\n\n\n\nb") == "a\n\nb")
+check("an empty reply is None", clean_reply("   ") is None and clean_reply(None) is None)
+check("a normal reply is untouched", clean_reply("Right then.") == "Right then.")
+
+# The retry ladder is jittered, so twenty negotiations do not retry in lockstep.
+delays = [__import__("gilbert.ai", fromlist=["_retry_delay"])._retry_delay(None, 0) for _ in range(25)]
+check("retry backoff is jittered", len(set(delays)) > 1, len(set(delays)))
+check("retry backoff stays bounded", all(0.0 <= d <= 5.0 for d in delays), max(delays))
 
 print("\nFAILURES:", len(fails))
 for failure in fails:

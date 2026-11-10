@@ -7,8 +7,8 @@
 > first — it is the same rules in a fraction of the length (~60 lines vs ~3,250).
 
 This repository is the **Royal Bank / Royal Court** bot for the Minecraft server
-**The Realm of Rune**, plus the placeholder for the **Forge mod** that will
-redeem shop orders and contract keys inside Minecraft.
+**The Realm of Rune**, plus the server-side **Forge mod** that redeems shop
+orders inside Minecraft.
 
 The bot runs as a Discord application. It owns the economy: nations, kingdoms,
 individual wallets, Royal Bank balances, bi-weekly payouts, the Royal Shop,
@@ -31,9 +31,10 @@ Gilbert AI persona.
    posts a summary and writes every movement to the ledger.
 4. Players spend credits in the **Royal Shop** on vanilla items and kits. A
    purchase produces a single-use `RC-XXXXXX-XXXXXX` key, DMed to the buyer.
-5. A **Forge mod** (not built yet) redeems those keys in-game and gives the
-   items to the player. There is **no Minecraft account linking** — the key is
-   the credential and the player UUID is recorded at redemption.
+5. A **Forge mod** redeems those keys in-game and gives the items to the
+   player. There is **no Minecraft account linking** — the key is the credential
+   and the player UUID is recorded at redemption. Redemption is gated: an admin
+   must register the Minecraft server IP with `/server setip` first.
 6. Nations and kingdoms can bring a **proposal** to either faction. **The
    Workers' Union** negotiates public works through Gilbert; **The Crown** buys
    **supplies** through Albert. Both open a private Discord thread from
@@ -127,21 +128,23 @@ still local-only.
 | Fishing | DONE | `/fish`: random 20–100 credit catch paid by the Fishing Guild, public |
 | Fishing Guild house account | DONE | `/fishingguild balance`, `fund` [Admin], `withdraw` [Admin]; every catch debits it |
 | Blackjack | DONE | `/blackjack amount`: hit/stand, 3:2 natural, dealer stands on 17, public |
-| Gambling floor UI | DONE | public result cards for coinflip/all-in/slots/roulette, poker table/result cards, house dashboard, spectator prompts and reaction bait |
+| Gambling floor UI | DONE | one-headline result cards with three figures (Bet / Payout / Wallet) for coinflip/all-in/slots/roulette, blackjack and poker tables that match, house dashboard, spectator prompts and reaction bait |
 | Poker (Texas Hold'em) | **DONE** | `/poker`: four-seat public table vs three house bots; fold/check/call/raise/all-in; buy-in held, timeout fold, restart refund, final-stack settlement |
 | Individual net worth tax | DONE | 5% of the whole wallet on every payout run (Cash and Default); nations/kingdoms untaxed |
 | Daily allowance | DONE | `/daily`; 24h cooldown, 100–400% streak multiplier, 60% floor |
 | Leaderboards | DONE | `/leaderboard nation`, `kingdom`, `individual`; never combined |
 | Contract key HTTP API | RETIRED | Returns `410 no_in_game_currency`; contracts pay in Discord |
-| **Forge mod** | **TODO** | Target pinned to **Minecraft 1.20.1 / Forge 47.x** (2026-11-06); `forge-mod/` is still a README only — no Java, no Gradle, no `mods.toml` |
-| In-game shop item delivery | TODO | Depends on the Forge mod |
+| **Forge mod** | **DONE** | `forge-mod/` now has Java sources, ForgeGradle build and `mods.toml` (Minecraft 1.20.1 / Forge 47.x); `gradle build` produces `royalcourt-redeem-1.0.0.jar` |
+| In-game shop item delivery | DONE (server-side) | `/redeem <key>` previews then `/redeem <key> confirm` grants; overflow is dropped safely |
+| Forge redemption IP gate | DONE | An admin must run `/server setip` before any key can be claimed; API answers `403` and leaves the key `pending` |
 | Minecraft account linking | NOT PLANNED | Deliberately avoided; keys are the credential |
 
 The contract payout flow is complete: an approved contract pays nothing
 automatically — the recipient claims each eligible tranche, and the credits
 land in the contract's claim account (the party by default). One-off legacy
 rows that were charged under the old model can claim their whole budget back.
-The Forge mod is the remaining major gap.
+The Forge mod is now implemented and its redemption is gated on the admin-entered
+Minecraft server IP.
 
 ---
 
@@ -160,7 +163,7 @@ bot.py (discord.py)  ──> cogs/*.py  ──> database.py ──> royal_bank.d
      └── api.py (aiohttp, bearer token) ────┘
                     ^
                     |
-        Minecraft Forge mod (planned)
+        Minecraft Forge mod (server-side; gated by /server setip)
 ```
 
 * The bot owns the database. The mod never touches SQLite.
@@ -206,6 +209,7 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `API_TOKEN` | Shared bearer token for the Forge mod |
 | `API_HOST` | HTTP bind address |
 | `API_PORT` | HTTP port |
+| `API_TRUST_FORWARDED` | Default `1`: read the caller IP from the first `X-Forwarded-For` hop for the redemption IP gate. Set `0` when the API is exposed directly (socket peer is the real address) |
 | `TURSO_DATABASE_URL` | Turso/libSQL URL (`libsql://...`) for the daily mirror |
 | `TURSO_AUTH_TOKEN` | The mirror's **own** token, separate from the chat-bot/API tokens |
 | `TURSO_SYNC_ENABLED` | `false` turns the mirror off (default on) |
@@ -369,7 +373,7 @@ Every source file and what it is for. Sub-packages have their own README.
 | File | Purpose |
 |---|---|
 | `bot.py` | Entry point; startup, database connect, cog loading, command sync, signal handling |
-| `api.py` | aiohttp redemption API used by the Forge mod (shop keys). Contract endpoints return `410` |
+| `api.py` | aiohttp redemption API used by the Forge mod (shop keys + non-consuming `/api/preview`). Refuses redemption unless the caller is the admin-registered server IP (`403`). Contract endpoints return `410` |
 | `daily_sync.py` | Once-a-day job: mirror every table/row (incl. `transactions`) into Turso/libSQL and write an AI "daily guide". Everything (URL, token, schedule, channel, path, AI) is env-driven |
 | `config.py` | Fixed economic constants: payout rates, discounts, fees, contract caps |
 | `contract_limits.py` | Pure helper for the contract leverage ladder (`max_budget_for_funds`, `budget_allowed`, `limit_explanation`) |
@@ -389,7 +393,7 @@ Every source file and what it is for. Sub-packages have their own README.
 | `fishing.py` | Pure `/fish` catch maths: random fish, 20–100 credit range, cap/house refusal rules (no Discord, no database) |
 | `creation.py` | Nation/kingdom petition flow with Approve/Deny buttons, plus `found_account()` (create + bonus + ledger) shared with the admin `add` commands |
 | `embeds.py` | Themed embed builders for accounts, payouts and errors |
-| `gambling_ui.py` | Spectator-facing gambling cards: coinflip/all-in/slots/roulette results, the Casino floor dashboard, the poker table/result cards, and public reaction cues |
+| `gambling_ui.py` | Spectator-facing gambling cards with one shared shape — one headline, three figures (Bet / Payout / Wallet), one spectator line — for coinflip/all-in/slots/roulette results, the Casino floor dashboard, the poker table/result cards, and public reaction cues |
 | `checks.py` | Reusable admin permission checks |
 | `utils.py` | Money formatting, account encoding/resolution, autocompletes |
 | `requirements.txt` | Python dependencies |
@@ -486,12 +490,21 @@ Every check builds its own throwaway SQLite files in a temp directory, so they
 never touch the live database and need no Discord login or network. They do need
 `discord.py`, `aiosqlite` and `python-dotenv` installed.
 
-### `forge-mod/` — Minecraft Forge companion
+### `forge-mod/` — Minecraft Forge companion (implemented)
 
 | Path | Purpose |
 |---|---|
-| `forge-mod/README.md` | Planned mod scope, API contract and current status |
-| `forge-mod/src/main/...` | Placeholder; no Java sources yet |
+| `forge-mod/README.md` | Mod scope, build/config/use guide, API contract and the IP gate |
+| `forge-mod/build.gradle`, `settings.gradle`, `gradle.properties` | ForgeGradle 6 build for Minecraft 1.20.1 / Forge 47.x |
+| `forge-mod/gradlew`, `gradle/wrapper/` | Self-contained Gradle wrapper (8.5) |
+| `forge-mod/src/main/java/com/royalcourt/redeem/` | `RoyalCourtRedeem`, `RedeemConfig`, `api/`, `command/RedeemCommand`, `item/ItemGranting` |
+| `forge-mod/src/main/resources/META-INF/mods.toml`, `pack.mcmeta` | Mod metadata |
+| `forge-mod/build/libs/royalcourt-redeem-1.0.0.jar` | Built, reobfuscated server-side mod (and a copy at `forge-mod/royalcourt-redeem-1.0.0.jar`) |
+
+The mod is a **redemption client**: players buy in Discord, get an
+`RC-XXXXXX-XXXXXX` key, and run `/redeem <key>` in-game to preview and claim it.
+It never touches SQLite. Redemption is refused until an admin registers the
+Minecraft server IP with `/server setip`; see section 9 and `forge-mod/README.md`.
 
 ---
 
@@ -1104,16 +1117,16 @@ README. The live bot runs from the account root, not from that folder.
 
 ## 9. Known gaps and next steps
 
-1. **Forge mod (TODO).** The `forge-mod/` tree has no source. The target is
-   pinned: **Minecraft 1.20.1 on Forge 47.x** (owner decision, 2026-11-06;
-   NeoForge is not used). It needs a Gradle MDK, a `mods.toml`, a config for the
-   API base URL/token, key entry plus a confirmation screen, the `/api/redeem`
-   client and item granting with overflow handling. `forge-mod/README.md` now
-   documents the **verified** request/response payload, the four item-key
-   families (`minecraft:`, `bundle:` which never reaches you, `enchant:<id>:<level>`
-   which you must parse, `backport:` which the mod must provide) and a build
-   order. Contract key routes answer `410 no_in_game_currency`; do not resurrect
-   in-game contract money.
+1. **Forge mod — implemented (2026-11-07).** `forge-mod/` now builds a
+   server-side **Minecraft 1.20.1 / Forge 47.x** mod (`royalcourt-redeem-1.0.0.jar`)
+   with `/redeem <key>` preview + clickable Claim, `/redeem <key> confirm`, item
+   granting (`minecraft:`, `enchant:<id>:<level>`, `backport:`; overflow dropped)
+   and a `RedeemConfig` for the API URL/token. **Redemption is gated:** an admin
+   must run `/server setip ip:<server-ip>` before any key can be claimed; the API
+   answers `403 server_not_registered` / `403 ip_not_allowed` and leaves the key
+   `pending`. `forge-mod/README.md` documents build/config/use, the item-key
+   families and the API contract. Contract key routes answer `410
+   no_in_game_currency`; do not resurrect in-game contract money.
 2. **Claim board backfill (nice to have).** `/contract setboard` posts new
    boards, but contracts approved before the board existed have no
    `board_message_id`, so they are not listed. `/contract claim` still works
@@ -1128,7 +1141,7 @@ README. The live bot runs from the account root, not from that folder.
    reads `status = completed` with `upfront_claimed = 1` and
    `final_claimed = 1`. Nothing is outstanding: do not ask an admin to claim or
    release it again.
-4. **Tests.** The `checks/` suite is the automated verification: 23 standalone
+4. **Tests.** The `checks/` suite is the automated verification: 24 standalone
    scripts run by `python3 checks/run_all.py`, all passing against this tree.
    They cover the pure maths, the database and transaction layer, transfers,
    the per-run tax cycle, factions/Crown contracts, every gambling game
@@ -1178,14 +1191,12 @@ README. The live bot runs from the account root, not from that folder.
    "keep the three newest per file plus everything from the current build, drop
    the rest once a release has survived a payout cycle". Prune only with an
    explicit decision — never as part of a code change.
-10. **There is no non-consuming preview route for shop keys.** `/api/redeem`
-    looks the order up *and* marks it `redeemed` in the same call, so a client
-    cannot show the player what the key is worth before spending it — and a
-    disconnect between the POST and the item grant burns the key. The Forge mod
-    needs `POST /api/preview` (same payload, `status` echoed, no state change) to
-    honour its own confirmation-screen rule. Small, additive, and worth doing
-    before mod work starts. Until then the only safe client behaviour is
-    "confirm before you call, grant immediately after".
+10. **Preview route — resolved (2026-11-07).** `POST /api/preview` now returns the
+    item list **without** changing state (same auth, payload and IP gate as
+    `/api/redeem`), so the Forge mod's `/redeem <key>` can show the confirmation
+    list and a Claim button before spending the key. `/api/redeem` still marks
+    the order `redeemed` atomically; the two calls never race into a double grant.
+    Both also require the admin-registered server IP (see section 9 item 1).
 
 ---
 
@@ -1301,7 +1312,125 @@ it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
 
-### 2026-11-07 — Concurrency hardening: read pool, shared AI client, atomic kingdom cap (uploaded; **restart pending**)
+### 2026-11-10 — Persona memory: every turn kept, a bounded window sent (local working copy)
+
+**The problem.** A negotiation longer than ~40 messages contradicted itself. The
+prompt was built from `contracts.history`, and that column was overwritten with
+`history[-40:]` on every turn, so the oldest — and most load-bearing — part of
+the conversation was destroyed first. The `albert_memory` table existed in the
+schema but had no caller, so neither persona remembered anything across cases.
+Separately, the deployed tree's own `check_contracts.py` was failing
+(**23/24**, `twenty negotiations are answered at once  12`): it asserted a peak
+of twenty concurrent AI calls from raw scheduler timing, which no longer holds
+on a slower host even though twelve calls really were in flight.
+
+**What changed (no economy rule changed, no command added — still 119 commands /
+17 cogs / 24 checks).**
+
+1. **Durable transcript.** `albert_memory` gains `contract_id` (migration, index
+   created after the `ALTER` in `migrate()`); `Database.add_persona_turn()`
+   appends every speaker line and nothing is pruned. `set_server_ip` and the
+   `mc_server_ip` gate are unchanged.
+2. **Bounded prompt.** `gilbert/memory.py` (pure, no Discord/DB/network) sends
+   the newest `CONTRACT_CONTEXT_TURNS` (16) turns verbatim plus one system block
+   condensing everything older, capped by `CONTRACT_CONTEXT_CHARS` (8,000) and
+   `CONTRACT_DIGEST_CHARS` (2,000). The digest is in-process, so it cannot fail,
+   time out or cost a provider call; it clips on a word boundary and shortens its
+   header rather than dropping memory.
+3. **Cross-case recall.** `Database.persona_prior_turns()` feeds 8 lines of
+   earlier cases (`CONTRACT_MEMORY_TURNS`) into a `PRIOR EXCHANGES WITH THIS
+   ACCOUNT` block. `contracts.history` is still written as the compatibility
+   window, and a case opened before this change is backfilled into the transcript
+   on its next reply.
+4. **Cheaper briefing.** `_agent_reply()` and `_crown_contract_context()` issue
+   their independent reads through `asyncio.gather` (two waves instead of seven
+   and ten sequential waits) on the existing WAL read pool, and
+   `transactions (guild_id, account_type, account_id, kind)` is indexed so
+   `union_contributions()` seeks the union rows instead of walking the account's
+   whole ledger (`EXPLAIN QUERY PLAN` now shows `SEARCH … USING INDEX
+   idx_tx_union`; 16.3 ms → 6.1 ms on a 60k-row test ledger).
+5. **Provider resilience.** A failure breaker (3 consecutive hard failures, 20 s
+   `CHATBOT_BREAKER_SECONDS`) stops an outage from becoming 60 doomed requests
+   and 20 slow replies; 429 never opens it. The retry ladder is jittered ±25%.
+6. **Reply hygiene.** `clean_reply()` strips an echoed `Gilbert:`/`Albert:` label,
+   squeezes blank runs, and yields `None` so the caller's fallback line is posted.
+
+**Verification.** `checks/run_all.py` **24/24**, `compileall` and `pyflakes`
+clean. New coverage: 26-message case stores 52 turns, still sends a digest
+quoting its opening line, window stays at 16; a second case with the same nation
+is briefed with the first; a first-time nation gets no recall block;
+storage/read bounds and the migration index in `check_database.py`; jitter and
+digest caps in `check_load.py` / `check_gilbert.py`. The twenty-negotiation
+assertion is now gated (`EchoAI(expect_concurrent=20)`) instead of relying on
+scheduler timing — it fails deterministically if a global lock is ever added.
+**Local working copy — not uploaded.**
+
+### 2026-11-09 — Simpler casino cards: one headline, three figures (uploaded; **restart pending**)
+
+**UI only; no money rule, command or ledger shape changed.** Every gambling card
+used to carry five or six numeric fields plus a duplicated "## headline" and a
+multi-line spectator paragraph, so the number a player actually wants — what the
+bet returned — was buried among Stake, Return, Net, Player Wallet and Casino
+Stack. Every card now has the same three-part shape:
+
+1. **One headline** with the outcome and the number that decided it
+   (`## 🪙 Heads`, `## 7 · red`, `## 🍒 │ 🍒 │ 🍒`, `## 💥 HIT at 5×`).
+2. **Three figures** on one row: **Bet**, **Payout** (signed net underneath)
+   and **Wallet**.
+3. **One spectator line** (`The Floor`) and a single-line footer.
+
+The **house stack is no longer repeated on every hand**; it lives on
+`/casino balance`, which now lists all six games (coinflip, all-in, slots,
+roulette, blackjack, poker) in one compact field above a two-line house rule.
+Blackjack matches the shape: the table is Dealer / Your Hand with the stake in
+the description, and settlement appends one `Result` line plus the spectator
+line instead of the old five-line block. Poker drops the duplicate Casino stack
+field and moves the pot into the heading. Command descriptions are plainer
+("Hit or stand against the dealer. A natural 21 pays 3:2.").
+
+**Verification.** `checks/check_casino.py` gains a `card_layout_checks()`
+section that builds every card and pins the shape: exactly
+`Bet / Payout / Wallet / The Floor`, no repeated house stack, one-line footers,
+signed credit nets (`net +1,000 credits` / `net -1,000 credits`), the three
+all-in questions, and a floor that names all six games. `checks/run_all.py`
+**24/24** (no new script), `compileall`/`pyflakes` clean, command surface
+unchanged at **119 commands / 17 cogs**.
+
+Files: `gambling_ui.py`, `cogs/games.py`, `cogs/individual.py`,
+`checks/check_casino.py`, `README.md`, `README-optimized.md`, `AGENTS.md`,
+`AGENTS-optimized.md`, `cogs/README.md`. Uploaded with `.bak-<stamp>` backups;
+**the hosting panel must restart the process** before the new cards are live.
+
+### 2026-11-07 — Forge mod implemented + admin server-IP gate on redemption (uploaded; **restart pending**)
+
+**What changed.** `forge-mod/` is no longer a placeholder: it builds a server-side
+Forge mod for **Minecraft 1.20.1 / Forge 47.x** (`gradle build` → 
+`royalcourt-redeem-1.0.0.jar`) with `RedeemConfig`, a `java.net.http` client, a
+`/redeem <key>` preview + clickable Claim, `/redeem <key> confirm`, and an
+`ItemGranting` mapper that handles `minecraft:`, `enchant:<id>:<level>` and
+`backport:` keys, dropping overflow.
+
+**The security ask.** An admin must now enter the Minecraft server's IP before
+the mod can claim anything. New cog `cogs/server.py` adds `/server setip`,
+`/server show` and `/server clear` (Administrator only). `database.settings` gains
+`mc_server_ip` (schema + `_MIGRATIONS`). `api.py` refuses **before** touching an
+order: `403 server_not_registered` when no IP is set, `403 ip_not_allowed` when
+the caller is not that address (socket peer, or first hop of `X-Forwarded-For`
+behind the panel proxy; `API_TRUST_FORWARDED=0` to ignore it). A refused attempt
+leaves the key `pending`. A non-consuming `POST /api/preview` was added so the
+mod can show the confirmation list without burning the key.
+
+**Verified.** `checks/run_all.py` **24/24** (new `checks/check_api.py` drives the
+real handlers: no-IP 403, wrong-IP 403 leaving the key pending, preview
+non-consuming, correct-IP 200, second redeem 409, plus XFF/`ip:port`/IPv4-mapped
+and the legacy 400/401/404); surface **119 commands / 17 cogs** (the four-node
+`/server` group); `compileall`/`pyflakes` clean. The Forge jar was built against
+the real 1.20.1 mappings (BUILD SUCCESSFUL). Uploaded with `.bak-20261107-210340`
+backups and SHA-256 verification; the deployed `.py` tree was re-pulled, is
+`compileall`/`pyflakes` clean and passes the suite. **The panel must restart the
+process** for the new cog, schema migration and API gate to run.
+
+
 
 **The problem.** Every statement went through one `aiosqlite` connection guarded
 by one process-wide lock, so on a busy evening a `/balance`, a leaderboard or an

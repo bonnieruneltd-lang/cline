@@ -1,9 +1,14 @@
 # Agent guide — optimized read-first version
 
-> **Current state (2026-11-07):** 115 commands / 16 cogs, all 23 checks green
-> on this checkout. Concurrency hardening (WAL read pool, shared AI client,
-> 3-second autocomplete cache, atomic kingdom cap) is **uploaded but needs a
-> panel restart** to run. `/contract invite` is live.
+> **Current state (2026-11-10):** 119 commands / 17 cogs, all 24 checks green
+> on this checkout. Casino cards are simplified — one headline, three figures
+> (Bet / Payout / Wallet) and one spectator line; the house stack lives on
+> `/casino balance` — **uploaded, needs a panel restart**. The **Forge mod is
+> implemented** (`forge-mod/`, Minecraft 1.20.1 / Forge 47.x, builds
+> `royalcourt-redeem-1.0.0.jar`), and redemption is gated: an admin must run
+> `/server setip` before any shop key can be claimed in-game. Persona memory,
+> the provider failure breaker and the parallel briefing reads are **local, not
+> uploaded**.
 
 This is a condensed, scannable summary of `AGENTS.md` (~84 lines against ~1,180).
 Read this first; the full `AGENTS.md` is the reference for everything below.
@@ -27,7 +32,8 @@ python3 -m pyflakes .                        # unused / undefined names
 - `paramiko` is needed for SFTP only, not a bot dependency.
 
 ## Command surface (pinned)
-- **115 commands / 16 cogs**, asserted by `checks/check_cogs.py`.
+- **119 commands / 17 cogs**, asserted by `checks/check_cogs.py`. The new
+  four-node `/server` group (`setip`/`show`/`clear`) gates Forge-mod redemption.
 - Only these account kinds exist: `nation`, `kingdom`, `individual`. No
   "individual source" anywhere — `/give` is treasury→member only.
 - `/contract invite` adds a helper to a negotiation and the persona answers them
@@ -64,6 +70,18 @@ python3 -m pyflakes .                        # unused / undefined names
    approved draw) — `commit_balance_to_union()` asserts `_in_tx`.
 8. **Tax runs inside the payout transaction** (`Payout._charge_union_dues` plus
    `individual_tax`); payout and tax never diverge.
+
+## Persona memory (new 2026-11-10)
+- Every turn is appended to `albert_memory` (`add_persona_turn`, `contract_id`
+  keyed) and **never pruned**; `contracts.history` is only the 40-turn legacy
+  compatibility window.
+- `gilbert/memory.py` builds the prompt: 16 turns verbatim, older turns as an
+  `EARLIER IN THIS NEGOTIATION` digest, plus `PRIOR EXCHANGES WITH THIS ACCOUNT`
+  from earlier cases. Pure arithmetic — never a provider call on the reply path.
+- `GilbertAI.complete()` opens a failure breaker after 3 hard failures
+  (`CHATBOT_BREAKER_SECONDS`) and jitters its backoff; `clean_reply()` strips an
+  echoed persona label. `_agent_reply`/`_crown_contract_context` gather their
+  independent reads on the WAL read pool — keep new reads inside those gathers.
 
 ## Money paths to know
 - Transfers: `account_transfers` is the single atomic path for all nine

@@ -242,10 +242,18 @@ async def main():
                 os.environ[key] = value
     check("AI concurrency cap is clamped",
           ai_module._env_int("CHATBOT_MAX_CONCURRENCY", 8, 1, 64) >= 1)
-    check("retry backoff grows and is capped",
-          ai_module._retry_delay(None, 0) == ai_module.RETRY_BASE_SECONDS
-          and ai_module._retry_delay(None, 3) == ai_module.RETRY_MAX_SECONDS,
-          (ai_module._retry_delay(None, 0), ai_module._retry_delay(None, 3)))
+    # Backoff is jittered (a burst of negotiations must not retry in lockstep),
+    # so the exact value is not fixed - the band and the cap are.
+    check("retry backoff is jittered around the base",
+          all(ai_module.RETRY_BASE_SECONDS * 0.75
+              <= ai_module._retry_delay(None, 0)
+              <= ai_module.RETRY_BASE_SECONDS * 1.25 for _ in range(20)),
+          ai_module._retry_delay(None, 0))
+    check("retry backoff is capped",
+          all(ai_module._retry_delay(None, 5) <= ai_module.RETRY_MAX_SECONDS
+              for _ in range(20)))
+    check("retry backoff still grows",
+          ai_module._retry_delay(None, 3) > ai_module._retry_delay(None, 0))
     first_session = ai_module.shared_session()
     second_session = ai_module.shared_session()
     check("one shared AI session per loop", first_session is second_session)

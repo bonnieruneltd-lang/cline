@@ -67,6 +67,7 @@ COGS = [
     "cogs.leaderboard",
     "cogs.games",
     "cogs.fishing",
+    "cogs.server",
 ]
 
 

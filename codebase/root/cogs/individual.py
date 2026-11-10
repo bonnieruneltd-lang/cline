@@ -768,7 +768,7 @@ class Individuals(commands.Cog):
 
     @app_commands.command(
         name="allin",
-        description="Stake your whole individual balance on one draw for an n-times return.",
+        description="Bet your whole balance on one draw — pays 2–100× your stake.",
     )
     @app_commands.describe(
         number="2-100. Pays this many times your stake; the chance is 1 in (1.1 x this).",

@@ -4,7 +4,7 @@
 
 Each check is a standalone script that builds throwaway SQLite databases in a
 temp directory; none of them touch the live database, Discord or the network.
-The suite has 23 scripts. A script passes only when it exits 0 **and** prints a
+The suite has 24 scripts. A script passes only when it exits 0 **and** prints a
 recognised summary (FAILURES/VERDICT/ALL OK); an exception printed without a
 summary is a failure, not a pass. Run this before uploading and again against a
 pulled copy of the deployed tree (see AGENTS.md, "Deploying").
@@ -37,6 +37,7 @@ ORDER = [
     "check_fishing.py",
     "check_poker.py",
     "check_shop.py",
+    "check_api.py",
     "check_gilbert.py",
     "check_daily_sync.py",
     "check_cogs.py",

@@ -263,6 +263,66 @@ async def main():
     check("missing account delete is a no-op",
           await db.delete_account("nation", 999_999, actor_id=999) == 0)
 
+    # --- persona memory: full transcripts, bounded reads -------------------
+    # Every turn is stored forever; a case reads back its own story only, and
+    # prior-case recall never leaks the current negotiation into itself.
+    for index in range(30):
+        await db.add_persona_turn(
+            guild_id=g, account_type="nation", account_id=nid, npc="gilbert",
+            speaker="user" if index % 2 == 0 else "assistant",
+            content=f"turn {index}", contract_id=4242,
+        )
+    await db.add_persona_turn(
+        guild_id=g, account_type="nation", account_id=nid, npc="gilbert",
+        speaker="user", content="older case line", contract_id=1111,
+    )
+    await db.add_persona_turn(
+        guild_id=g, account_type="nation", account_id=nid, npc="albert",
+        speaker="user", content="a different persona", contract_id=4242,
+    )
+    stored = await db.persona_turns(
+        guild_id=g, account_type="nation", account_id=nid, npc="gilbert",
+        contract_id=4242,
+    )
+    check("every turn is kept (nothing is pruned)",
+          len(stored) == 30 and stored[0]["content"] == "turn 0", len(stored))
+    check("a transcript reads back oldest first",
+          [row["content"] for row in stored[-2:]] == ["turn 28", "turn 29"],
+          [row["content"] for row in stored[-2:]])
+    check("another persona's memory does not bleed in",
+          all("different persona" not in row["content"] for row in stored))
+    check("a transcript read is bounded",
+          len(await db.persona_turns(
+              guild_id=g, account_type="nation", account_id=nid,
+              npc="gilbert", contract_id=4242, limit=5,
+          )) == 5)
+    prior_rows = await db.persona_prior_turns(
+        guild_id=g, account_type="nation", account_id=nid, npc="gilbert",
+        exclude_contract_id=4242, limit=5,
+    )
+    check("prior recall comes from earlier cases",
+          [row["content"] for row in prior_rows] == ["older case line"],
+          [row["content"] for row in prior_rows])
+    check("prior recall never includes the current case",
+          all("turn" not in row["content"] for row in prior_rows))
+    before = len(await db.persona_turns(
+        guild_id=g, account_type="nation", account_id=nid, npc="gilbert",
+        contract_id=4242, limit=400,
+    ))
+    await db.add_persona_turn(
+        guild_id=g, account_type="nation", account_id=nid, npc="gilbert",
+        speaker="user", content="   ", contract_id=4242,
+    )
+    check("blank lines are not stored",
+          len(await db.persona_turns(
+              guild_id=g, account_type="nation", account_id=nid, npc="gilbert",
+              contract_id=4242, limit=400,
+          )) == before)
+    legacy_index = await db.fetchone(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_albert_memory_contract'"
+    )
+    check("the transcript index exists after migration", legacy_index is not None)
+
     await db.close()
     print("\nFAILURES:", len(fails))
     for f in fails:

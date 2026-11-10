@@ -48,8 +48,9 @@ Fishing Guild houses, the
 wallet-deletion lifecycle, the concurrency/load layer (read-pool isolation,
 concurrent credits and transfers, the six-nation cap, autocomplete cache and AI
 client limits), the runner's own
-false-pass guard and a cog-load smoke test. All **23** pass as of 2026-11-07
-(`check_casino.py` also drives `/poker` end to end, `check_fishing.py` drives
+false-pass guard and a cog-load smoke test. All **24** pass as of 2026-11-07
+(`check_api.py` drives the redemption API and the admin server-IP gate,
+`check_casino.py` also drives `/poker` end to end, `check_fishing.py` drives
 `/fish`, `check_shop.py` drives `/shop` and `/kit`, and `check_factions.py`
 drives the faction/Crown commands; 
 `check_contracts.py` drives a real Crown request, the Crown-funded claim and the
@@ -127,11 +128,40 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 
 ### Last known live state
 
-2026-11-07 (**concurrency hardening: the read pool, the shared AI client, the
-autocomplete cache and the atomic kingdom cap; surface unchanged at 115 commands
-/ 16 cogs**). Working tree green: `checks/run_all.py` **23/23**,
-`compileall`/`pyflakes` clean. **Uploaded but not yet loaded** — the hosting
-panel must restart the process for the new code to run.
+2026-11-09 (**casino UI simplified; surface unchanged at 119 commands / 17
+cogs**). Every gambling card now uses one shape — one headline, three figures
+(**Bet / Payout / Wallet**) and one spectator line — and the house stack lives
+only on `/casino balance`, which lists all six games. Blackjack and poker match
+the shape. `checks/check_casino.py` pins it with `card_layout_checks()`.
+Working tree green: `checks/run_all.py` **24/24**, `compileall`/`pyflakes`
+clean. **Uploaded but not yet loaded** — the hosting panel must restart the
+process for the new code (and the pending 2026-11-07 Forge build) to run.
+
+2026-11-07 (**Forge mod + admin server-IP gate; surface 119 commands / 17 cogs**).
+Working tree green: `checks/run_all.py` **24/24**, `compileall`/`pyflakes` clean,
+the Forge jar builds. **Uploaded (stamp `20261107-210340`) but not yet loaded** —
+the hosting panel must restart the process for the new `/server` cog, the
+`settings.mc_server_ip` migration and the `403` API gate to run.
+
+What landed:
+
+1. **The Forge mod is implemented** (`forge-mod/`): a server-side 1.20.1 /
+   Forge 47.x mod (`royalcourt-redeem-1.0.0.jar`, build verified against the real
+   mappings) with `/redeem <key>` preview + clickable Claim, `/redeem <key> confirm`,
+   `ItemGranting` for `minecraft:`/`enchant:<id>:<level>`/`backport:` keys
+   (dropping overflow) and `RedeemConfig` for the API URL/token.
+2. **Redemption is gated on an admin-entered server IP.** New `cogs/server.py`
+   (`/server setip|show|clear`, Administrator only) plus `settings.mc_server_ip`;
+   `api.py` answers `403 server_not_registered` (no IP set) or `403 ip_not_allowed`
+   (wrong caller) **before** it touches an order, so a refused key stays
+   `pending`. It reads the socket peer or the first `X-Forwarded-For` hop
+   (`API_TRUST_FORWARDED=0` to ignore). Added non-consuming `POST /api/preview`.
+3. **New check** `checks/check_api.py` drives the real handlers (no-IP/wrong-IP
+   refusals, non-consuming preview, correct redeem, 409/401/400/404, XFF and
+   address normalisation) — the suite is now **24** scripts.
+
+### Previous deploy — concurrency hardening (2026-11-07; surface 115 / 16, 23/23)
+
 
 What landed (no economy rule changed; every credit still moves inside one
 `BEGIN IMMEDIATE` transaction on the one writer):
@@ -792,6 +822,28 @@ from the hosting panel before any of this takes effect.
   `BUG-FIXES.md` known issue 7.
 
 ## Contract plumbing worth knowing
+
+- **Persona memory.** Every turn of every negotiation is appended to
+  `albert_memory` by `Database.add_persona_turn()` (guild, account, `npc`=
+  `gilbert`/`albert`, `contract_id`, speaker, content) and **never pruned**.
+  `gilbert/memory.py` decides what the model sees: `CONTRACT_CONTEXT_TURNS` (16)
+  turns verbatim, older ones condensed into one `EARLIER IN THIS NEGOTIATION`
+  system block (`CONTRACT_CONTEXT_CHARS`, `CONTRACT_DIGEST_CHARS`), plus
+  `CONTRACT_MEMORY_TURNS` (8) lines of earlier cases as `PRIOR EXCHANGES WITH
+  THIS ACCOUNT`. The digest is pure arithmetic, not another provider call:
+  keep it that way, or a prompt build starts failing on the money-path reply.
+  `contracts.history` still holds the last `CONTRACT_HISTORY_LIMIT` (40) turns for
+  compatibility and is backfilled into the transcript on a case's next reply.
+- `GilbertAI.complete()` opens a per-endpoint failure breaker after three
+  consecutive hard failures (`CHATBOT_BREAKER_SECONDS`, default 20 s) and
+  returns `None` immediately while it is open, so the caller posts its fallback
+  line instead of stacking retries; 429 never opens it. Backoff is jittered.
+- Replies pass through `clean_reply()` before posting: an echoed `Gilbert:` /
+  `Albert:` label is removed and blank runs are squeezed. `None` means "use the
+  fallback line".
+- The briefing reads in `_agent_reply()` and `_crown_contract_context()` are
+  gathered, not sequential: keep new independent reads inside those
+  `asyncio.gather` calls so a reply does not wait on them one at a time.
 
 - The Union pays the contractor out of `union_account`; the party is never
   charged. `approve` records the split and the claim account, and pays nothing,
