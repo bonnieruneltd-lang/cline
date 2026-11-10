@@ -1354,6 +1354,12 @@ on a slower host even though twelve calls really were in flight.
    and 20 slow replies; 429 never opens it. The retry ladder is jittered ±25%.
 6. **Reply hygiene.** `clean_reply()` strips an echoed `Gilbert:`/`Albert:` label,
    squeezes blank runs, and yields `None` so the caller's fallback line is posted.
+7. **Lookup quality.** `gilbert/lookup.py` now ranks the Tavily hits: consent
+   walls, newsletter wells and "enable JavaScript" shells are dropped, the
+   Minecraft/Forge hosts are promoted, and duplicate URLs/text are collapsed
+   (`rank_results()`). A live query for "is bamboo a good furnace fuel" used
+   to put a cookie-consent page in the 2,200-character prompt block; it now
+   leads with the Minecraft Wiki hit and contains no consent text.
 
 **Verification.** `checks/run_all.py` **24/24**, `compileall` and `pyflakes`
 clean. New coverage: 26-message case stores 52 turns, still sends a digest

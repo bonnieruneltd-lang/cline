@@ -139,6 +139,102 @@ def build_query(text: str, *, max_chars: int = 320) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Result quality (pure)
+# ---------------------------------------------------------------------------
+# Tavily happily returns cookie-consent pages, newsletter wells and "enable
+# JavaScript" shells for a mechanics query. One of those in the prompt is worse
+# than nothing: it burns the character budget the real answer needed and reads
+# to the model like a source. Boilerplate is dropped, authoritative hosts are
+# promoted, and duplicates (the same page under several URLs) are collapsed.
+JUNK_MARKERS = (
+    "we use cookies", "this site uses cookies", "cookie policy", "cookie consent",
+    "accept all cookies", "manage preferences", "cookie list", "gdpr",
+    "subscribe to our newsletter", "enable javascript", "javascript is disabled",
+    "sign in to continue", "create a free account", "advertisement",
+)
+# Domains whose Minecraft/Forge answers are worth reading first.
+TRUSTED_DOMAINS = (
+    "minecraft.wiki",
+    "minecraft.fandom.com",
+    "minecraft.net",
+    "help.minecraft.net",
+    "docs.minecraftforge.net",
+    "forums.minecraftforge.net",
+    "minecraftforge.net",
+    "curseforge.com",
+    "modrinth.com",
+    "planetminecraft.com",
+    "minecraftforum.net",
+    "ftb.fandom.com",
+)
+
+
+def _host(url: str) -> str:
+    text = str(url or "").strip().lower()
+    for prefix in ("https://", "http://"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    host = text.split("/", 1)[0].split("?", 1)[0]
+    return host[4:] if host.startswith("www.") else host
+
+
+def _boilerplate(item: dict) -> bool:
+    """True when a hit is a consent wall, a paywall shell or an advert."""
+    title = str(item.get("title") or "").lower()
+    head = " ".join(str(item.get("content") or "").lower().split())[:400]
+    blob = f"{title} {head}"
+    hits = sum(1 for marker in JUNK_MARKERS if marker in blob)
+    # One stray "advertisement" in a long wiki page is noise; a title that is a
+    # consent wall, or a body made of two such markers, is not an answer.
+    return any(marker in title for marker in JUNK_MARKERS) or hits >= 2
+
+
+def _score(item: dict) -> int:
+    host = _host(item.get("url", ""))
+    body = " ".join(str(item.get("content") or "").split())
+    title = str(item.get("title") or "").lower()
+    score = 0
+    if any(host == domain or host.endswith("." + domain) for domain in TRUSTED_DOMAINS):
+        score += 4
+    if any(word in title for word in ("minecraft", "forge", "1.20")):
+        score += 1
+    if len(body) >= 140:
+        score += 1
+    if not str(item.get("url") or "").strip():
+        score -= 1
+    return score
+
+
+def rank_results(results, *, limit: int = DEFAULT_MAX_RESULTS) -> list[dict]:
+    """Filter, rank and de-duplicate search hits. Never raises."""
+    kept: list[tuple[int, int, dict]] = []
+    seen_urls: set[str] = set()
+    seen_text: set[str] = set()
+    for order, item in enumerate(results or []):
+        if not isinstance(item, dict):
+            continue
+        title = " ".join(str(item.get("title") or "").split())
+        body = " ".join(str(item.get("content") or "").split())
+        if not (title or body):
+            continue
+        if _boilerplate(item):
+            continue
+        url = str(item.get("url") or "").strip()
+        key_url = url.split("#", 1)[0].rstrip("/").lower()
+        key_text = f"{title.lower()}|{body[:120].lower()}"
+        if (key_url and key_url in seen_urls) or key_text in seen_text:
+            continue
+        if key_url:
+            seen_urls.add(key_url)
+        seen_text.add(key_text)
+        kept.append((-_score(item), order, {"title": title, "url": url, "content": body}))
+    kept.sort(key=lambda row: (row[0], row[1]))
+    keep = max(1, int(limit))
+    return [item for _, _, item in kept[:keep]]
+
+
+# ---------------------------------------------------------------------------
 # Formatting (pure)
 # ---------------------------------------------------------------------------
 def format_results(
@@ -159,12 +255,10 @@ def format_results(
         lines.append(f"PINNED SERVER BUILD: {platform_note()}")
 
     bullets: list[str] = []
-    for item in results or []:
-        if not isinstance(item, dict):
-            continue
-        title = " ".join(str(item.get("title") or "").split())[:120]
-        url = str(item.get("url") or "").strip()[:200]
-        body = " ".join(str(item.get("content") or "").split())[:420]
+    for item in rank_results(results):
+        title = item["title"][:120]
+        url = item["url"][:200]
+        body = item["content"][:420]
         if not (title or body):
             continue
         piece = f"- {title}" if title else "- (result)"

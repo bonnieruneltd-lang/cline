@@ -256,6 +256,40 @@ check("no results still yields the platform note",
 check("no results and no platform yields None",
       lookup.format_results([], include_platform=False) is None)
 
+# --- result quality: boilerplate out, authoritative hosts first -------------
+junk_and_gold = [
+    {"title": "Cookie Consent", "url": "https://ads.test/cookies",
+     "content": "We use cookies. Accept all cookies to continue. Cookie list."},
+    {"title": "Bamboo - Minecraft Wiki", "url": "https://minecraft.wiki/w/Bamboo",
+     "content": "Bamboo can be used as fuel in a furnace and grows on sand or dirt."},
+    {"title": "Some blog", "url": "https://blog.test/post",
+     "content": "Bamboo is great."},
+    {"title": "Bamboo - Minecraft Wiki", "url": "https://minecraft.wiki/w/Bamboo",
+     "content": "Bamboo can be used as fuel in a furnace and grows on sand or dirt."},
+]
+ranked = lookup.rank_results(junk_and_gold)
+check("a consent wall is dropped", all("Cookie" not in r["title"] for r in ranked))
+check("the authoritative hit ranks first",
+      ranked and ranked[0]["url"].startswith("https://minecraft.wiki"), ranked[:1])
+check("duplicates are collapsed", len(ranked) == 2, len(ranked))
+check("ranking respects its limit", len(lookup.rank_results(junk_and_gold, limit=1)) == 1)
+check("ranking never raises on junk input",
+      lookup.rank_results([None, "x", 3, {"title": ""}]) == [])
+check("one stray advert does not discard a real answer",
+      lookup.rank_results([{
+          "title": "Iron Golem farming",
+          "url": "https://minecraft.wiki/w/Iron_Golem",
+          "content": "Build a platform, place water, " + "x " * 200 + "advertisement",
+      }]) != [])
+check("a boilerplate title is dropped even with a long body",
+      lookup.rank_results([{
+          "title": "Enable JavaScript", "url": "https://x.test",
+          "content": "y " * 300,
+      }]) == [])
+junk_block = lookup.format_results(junk_and_gold, include_platform=False)
+check("the formatted block carries no consent text", "cookie" not in junk_block.lower())
+check("the formatted block carries the real answer", "fuel" in junk_block)
+
 with patch.dict(os.environ, {"TAVILY_API_KEY": "", "LOOKUP_ENABLED": "true"}, clear=False):
     check("lookups need a key", lookup.enabled() is False)
 with patch.dict(os.environ, {"TAVILY_API_KEY": "k", "LOOKUP_ENABLED": "false"}, clear=False):

@@ -138,6 +138,28 @@ for an empty body so the caller's fallback line is used. Applied once in
 **Test.** `check_gilbert.py` (label stripped, `Case UN-1-001:` keeps its colon,
 blank runs squeezed, empty is `None`).
 
+## Live lookups fed the model a cookie banner — 2026-11-10
+
+**Symptom.** A mechanics question produced a `LIVE WEB RESULTS` block whose
+2,200-character budget was partly spent on a cookie-consent page ("Cookie List",
+"Manage preferences"), and the authoritative wiki hit was pushed out of the
+block by the cap.
+
+**Cause.** `lookup.format_results()` rendered whatever Tavily returned, in the
+provider's order, with no filtering, no ranking and no de-duplication.
+
+**Fix.** `lookup.rank_results()` runs before formatting: hits whose title is a
+consent/paywall/JS shell (or whose body carries two such markers) are dropped,
+`TRUSTED_DOMAINS` (minecraft.wiki, fandom, minecraft.net, Forge docs, CurseForge,
+Modrinth, …) are promoted, and duplicate URLs or identical text are collapsed.
+`format_results()` renders only the ranked set.
+
+**Test.** `check_gilbert.py` (consent wall dropped, wiki first, duplicates
+collapsed, limit respected, junk input safe, one stray advert does not discard a
+real answer, formatted block carries no consent text). Re-run live against
+Tavily: the same query now leads with the Minecraft Wiki hit and contains no
+cookie text.
+
 ## A flaky concurrency assertion — 2026-11-10
 
 **Symptom.** `check_contracts.py` failed on the deployed tree:
