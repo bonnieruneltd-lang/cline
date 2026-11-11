@@ -134,12 +134,13 @@ backup; surface unchanged at 119 commands / 17 cogs**). Working tree green:
 yet loaded** — the process must be restarted from the hosting panel for the new
 `gilbert/ai.py` fallback path and the `.env` provider switch to take effect.
 
-- Personas (`/contract` negotiations, `/poker` bot names): Cline gateway
-  `https://api.cline.bot/api/v1`, `CHATBOT_MODEL=cline-pass/deepseek-v4-pro`,
-  0.75, 16,000 tokens, 240 s. This is the **smarter** model the owner asked for:
-  the Google free key returns 429 `free_tier_requests, limit: 0` for every Pro
-  model, `3.7/3.8-flash` are 503/timeout and `3.6-flash` took 48 s; the Cline
-  pro tier answered the real persona prompt in 9–16 s with correct rules.
+- Personas (`/contract` negotiations, `/poker` bot names): DeepSeek's own API,
+  `https://api.deepseek.com`, `CHATBOT_MODEL=deepseek-v4-pro` (the legacy
+  persona key from `AI_API_KEY`), 0.75, 16,000 tokens, 240 s. The owner asked to
+  switch back to DeepSeek after a short Cline trial: **13.9 s** on the real
+  persona prompt and correct on public benefit, the 1/1 quota and a
+  400k-vs-1M treasury. `deepseek-chat` is the 3.8 s alternative if speed matters
+  more; do not put the guide back on the pro tier (see below).
 - Daily guide: DeepSeek `https://api.deepseek.com` with its own
   `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-chat`, 0.25, 16,000,
   `DAILY_GUIDE_TIMEOUT=600`. **Never put the guide back on the pro tier without

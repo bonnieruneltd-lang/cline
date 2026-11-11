@@ -1,14 +1,14 @@
 # README — optimized read-first version
 
 > **Current state (2026-11-11):** 119 commands / 17 cogs, all 24 checks green
-> on this checkout. **AI:** personas (Gilbert + Albert, `/poker` names) on the
-> Cline pass **pro** tier `cline-pass/deepseek-v4-pro` via
-> `https://api.cline.bot/api/v1` (9–16 s; the Google free key cannot run a Pro
-> model — 429 limit 0 — and 3.6-flash took 48 s); the daily guide on DeepSeek
-> `deepseek-chat` with its own key and `DAILY_GUIDE_TIMEOUT=600` (the pro tier
-> took 206 s for 12k chars and kept hitting the 240 s persona timeout — a guide
-> that says `_Generated … without the AI model._` timed out, the key is fine);
-> Google AI Studio `gemini-3.5-flash` is the cross-provider backup for either
+> on this checkout. **AI:** personas (Gilbert + Albert, `/poker` names) are back
+> on DeepSeek's own API `https://api.deepseek.com` with
+> `CHATBOT_MODEL=deepseek-v4-pro` (13.9 s on the real prompt; `deepseek-chat` is
+> the 3.8 s alternative); the daily guide on DeepSeek `deepseek-chat` with its
+> own key and `DAILY_GUIDE_TIMEOUT=600` (the pro tier took 206 s for 12k chars
+> and kept hitting the 240 s persona timeout — a guide that says
+> `_Generated … without the AI model._` timed out, the key is fine); Google AI
+> Studio `gemini-3.5-flash` is the cross-provider backup for either
 > (`CHATBOT_FALLBACK_*`, `DAILY_GUIDE_FALLBACK_MODEL`). Persona replies are
 > now checked with `looks_out_of_character()`: one in-character retry, then a
 > `CHARACTER_DEFLECTION` instead of a leaked AI/model/provider name; both prompts

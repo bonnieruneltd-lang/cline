@@ -106,18 +106,16 @@ overrides, which is how `DailySync` runs the guide on a different model from the
 same key (`DAILY_GUIDE_MODEL`, `DAILY_GUIDE_TEMPERATURE`,
 `DAILY_GUIDE_MAX_TOKENS`).
 
-**Live choice (2026-11-11, second pass):** personas on the Cline pass **pro**
-tier `cline-pass/deepseek-v4-pro` via `https://api.cline.bot/api/v1` (0.75,
-16,000, 240 s) — a measured 9–16 s per negotiation reply, and correct on the
-public-benefit rule, the 1/1 nation quota and a 400k-vs-1M treasury. The owner
-asked for a smarter model than `gemini-3.5-flash`: every Google Pro model is
-429 `free_tier_requests, limit: 0`, `3.7/3.8-flash` are 503/timeout and
-`3.6-flash` took 48 s on the same prompt. The guide stays on DeepSeek
-`deepseek-chat` (0.25, 16,000, 600 s) with its own key. The **cross-provider
-backup** is now Google AI Studio `gemini-3.5-flash` (5–9 s): the personas use it
-through `CHATBOT_FALLBACK_*`, the guide through `DAILY_GUIDE_FALLBACK_MODEL`.
-The earlier live choice (2026-11-11, first pass) was `gemini-3.5-flash` for the
-personas with the Cline pass as the backup; the 2026-11-06 choice was
+**Live choice (2026-11-11, third pass):** personas are back on DeepSeek's own
+API `https://api.deepseek.com` with `deepseek-v4-pro` (0.75, 16,000, 240 s) —
+**13.9 s** on the real negotiation prompt and correct on public benefit, the 1/1
+quota and a 400k-vs-1M treasury; `deepseek-chat` gave the same ruling in **3.8 s**
+if speed matters more. The owner asked to switch back to DeepSeek after a short
+Cline trial. The guide stays on DeepSeek `deepseek-chat` (0.25, 16,000, 600 s)
+with its own key. The **cross-provider backup** is Google AI Studio
+`gemini-3.5-flash` (5–9 s), used by both the personas and the guide. Earlier the
+same day: Cline `cline-pass/deepseek-v4-pro` (9–16 s), then Google
+`gemini-3.5-flash`; the 2026-11-06 choice was
 `cline-pass/deepseek-v4.1-flash-1017`. `cline-pass/deepseek-v4.1-pro` does not
 exist — the alias is `cline-pass/deepseek-v4-pro`.
 
@@ -125,14 +123,17 @@ exist — the alias is `cline-pass/deepseek-v4-pro`.
 
 "the key is active but nothing is generated" is almost never the key. Run the
 matrix below before changing any `.env` value — each row is a real response
-measured on 2026-11-11. The Google rows used `POST
-https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`; the
-`cline-pass/*` rows used `POST https://api.cline.bot/api/v1/chat/completions`:
+measured on 2026-11-11. The `deepseek-*` rows used `POST
+https://api.deepseek.com/chat/completions`, the Google rows used `POST
+https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`, and
+the `cline-pass/*` rows used `POST https://api.cline.bot/api/v1/chat/completions`:
 
 | Model | Result | Meaning |
 |---|---|---|
-| `cline-pass/deepseek-v4-pro` | 200 in 9–16 s | ✅ the live persona model (Cline gateway; the client unwraps its `data{}` envelope) |
-| `cline-pass/deepseek-v4.1-flash-1017` | 200 in 7–8 s | the previous persona model: faster but plainer prose |
+| `deepseek-v4-pro` (api.deepseek.com) | 200 in 13.9 s | ✅ the live persona model |
+| `deepseek-chat` (api.deepseek.com) | 200 in 3.8 s | fastest correct DeepSeek option |
+| `cline-pass/deepseek-v4-pro` | 200 in 9–16 s | Cline gateway alternative (short trial) |
+| `cline-pass/deepseek-v4.1-flash-1017` | 200 in 7–8 s | the 2026-11-06 persona model: faster but plainer prose |
 | `gemini-3.5-flash` | 200 in 5–9 s | ✅ the live cross-provider **backup** |
 | `gemini-3.1-flash-lite` | 200 in 0.7 s | ✅ fastest fallback candidate, plainer prose |
 | `gemini-3.6-flash` | 200 in 34–48 s | too slow for a negotiation |
@@ -147,7 +148,7 @@ provider, and an empty `200` with `finish_reason: "length"` is `max_tokens` bein
 spent on reasoning. `provider_hint()` prints that diagnosis in the log.
 
 **Latency decides the guide's model, not quality.** On the same 12k-character
-document `deepseek-v4-pro` took **206 s** and `deepseek-chat` **16 s**; the
+**guide** document `deepseek-v4-pro` took **206 s** and `deepseek-chat` **16 s**; the
 production guide (59.6k-char source, the `DAILY_GUIDE_SOURCE_CHARS` cap) took
 **17.2 s** on the flash tier. The old 240 s `CHATBOT_TIMEOUT` was the actual
 defect: a pro-tier guide run spent ~229 s of it and, on any slower day, timed out

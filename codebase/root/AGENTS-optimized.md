@@ -2,10 +2,10 @@
 
 > **Current state (2026-11-11):** 119 commands / 17 cogs, all 24 checks green
 > on this checkout. **AI (uploaded 2026-11-11; restart pending):** the personas
-> (Gilbert + Albert, `/poker` names) run on the Cline pass **pro** tier
-> `cline-pass/deepseek-v4-pro` (9–16 s; the Google free key cannot run a Pro
-> model — 429 limit 0 — and 3.6-flash took 48 s); the daily guide stays on
-> DeepSeek `deepseek-chat` with its own `DAILY_GUIDE_API_KEY` and
+> (Gilbert + Albert, `/poker` names) are back on DeepSeek's own API
+> `https://api.deepseek.com` with `CHATBOT_MODEL=deepseek-v4-pro` (13.9 s on the
+> real prompt; `deepseek-chat` is the 3.8 s alternative); the daily guide stays
+> on DeepSeek `deepseek-chat` with its own `DAILY_GUIDE_API_KEY` and
 > `DAILY_GUIDE_TIMEOUT=600` (the pro tier took 206 s for 12k chars and kept
 > hitting the 240 s persona timeout — a guide that says
 > `_Generated … without the AI model._` means it timed out, not that the key is
