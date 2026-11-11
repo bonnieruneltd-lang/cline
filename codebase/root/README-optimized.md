@@ -1,16 +1,21 @@
 # README — optimized read-first version
 
-> **Current state (2026-11-10):** 119 commands / 17 cogs, all 24 checks green
-> on this checkout. Casino cards are simplified — one headline, three figures
-> (Bet / Payout / Wallet) and one spectator line; the house stack lives on
-> `/casino balance` — **uploaded, needs a panel restart**. The **Forge mod is
-> implemented** (`forge-mod/`, Minecraft 1.20.1 / Forge 47.x, builds
-> `royalcourt-redeem-1.0.0.jar`), and redemption is gated: an admin must run
-> `/server setip` before any shop key can be claimed in-game. Persona memory
-> (full transcript, bounded prompt window, cross-case recall), the provider
-> failure breaker and the parallel briefing reads are **uploaded 2026-11-10,
-> waiting for a panel restart** (`gilbert/memory.py` is new — it is on the
-> host).
+> **Current state (2026-11-11):** 119 commands / 17 cogs, all 24 checks green
+> on this checkout. **AI:** personas (Gilbert + Albert, `/poker` names) on Google
+> AI Studio `gemini-3.5-flash`; the daily guide on DeepSeek `deepseek-chat` with
+> its own key and `DAILY_GUIDE_TIMEOUT=600` (the pro tier took 206 s for 12k chars
+> and kept hitting the 240 s persona timeout — a guide that says
+> `_Generated … without the AI model._` timed out, the key is fine); the Cline
+> pass key is the backup for either (`CHATBOT_FALLBACK_*`). **Also uploaded
+> 2026-11-10 (stamp `20261110-164655`, 11 files), restart pending:** `/casino withdraw` reserves the worst-case payout of open
+> blackjack/poker hands and `/casino balance` shows the held line; account names
+> are unique ignoring case; name/leaderboard indexes, a boot `PRAGMA quick_check`
+> and a WAL checkpoint on close. Casino cards are simplified — one headline,
+> three figures (Bet / Payout / Wallet) and one spectator line; the house stack
+> lives on `/casino balance`. The **Forge mod is implemented** (`forge-mod/`, its
+> sources mirrored into this checkout on 2026-11-10, Minecraft 1.20.1 / Forge
+> 47.x, builds `royalcourt-redeem-1.0.0.jar`), and redemption is gated: an admin
+> must run `/server setip` before any shop key can be claimed in-game.
 
 This is a condensed, scannable summary of `README.md` (~3,250 lines → ~60 lines).
 Read this first; `README.md` is the reference for every rule below.
@@ -69,10 +74,16 @@ Three economy account types that **never mix**: `nation`, `kingdom`, `individual
 7. Never upload `.env`, `*.db`, `*.db-wal`, `*.db-shm` or `__pycache__`.
 
 ## Known gaps (README §9)
-- **Forge mod:** `forge-mod/` is a placeholder README only; target pinned to 1.20.1 / Forge 47.x. No `POST /api/preview` yet — `/api/redeem` redeems in the same call (a disconnect between POST and item grant burns the key).
+- **Forge mod:** implemented, and its sources are in this checkout since
+  2026-11-10 (`forge-mod/src/main/java/…`, Gradle files, `mods.toml`; built jar and
+  `build/` ignored). Target pinned to 1.20.1 / Forge 47.x. `POST /api/preview`
+  exists and is non-consuming; the only in-game confirmation is the Claim button.
 - **No backup pruning:** backups accumulate (559 on the host); keep 3 newest per file plus the live build's. Prune only on an explicit decision.
 - **Turso mirror is append-only:** deleted-member ledger rows survive remotely (681 local vs 685 mirrored). Owner decision needed — do not change silently.
-- **Two remaining code-level defects** are documented in BUG-FIXES.md (§"Known remaining issues"): `#/casino withdraw` can strand an open hand's stake; kingdom nation-cap check is not transactional.
+- **Code-level defects from that list are all closed:** the `/casino withdraw`
+  open-hand reserve and the case-insensitive name race were fixed on 2026-11-10,
+  and the kingdom nation-cap check became transactional on 2026-11-07. The
+  remaining items in `BUG-FIXES.md` are deliberate product decisions, not bugs.
 
 ## Money paths (where credits flow)
 | Path | Source | Destination | Locked in one transaction? |

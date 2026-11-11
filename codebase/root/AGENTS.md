@@ -139,8 +139,12 @@ yet loaded** — the process must be restarted from the hosting panel for the ne
   `CHATBOT_MODEL=gemini-3.5-flash`, 0.75, 16,000 tokens, 240 s.
 - Daily guide: DeepSeek `https://api.deepseek.com` with its own
   `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-chat`, 0.25, 16,000,
-  `DAILY_GUIDE_TIMEOUT=600` (the flash tier writes the document in ~16 s where
-  the pro tier needed 206 s and kept tripping the persona timeout).
+  `DAILY_GUIDE_TIMEOUT=600`. **Never put the guide back on the pro tier without
+  raising the timeout**: `deepseek-v4-pro` needed 206 s for 12k characters (and
+  ~229 s of the 240 s persona budget in production), while the flash tier does
+  the 59.6k-char worst case in 17 s. A guide that starts with
+  `_Generated … without the AI model._` means the call failed or timed out — it
+  does **not** mean the key is dead.
 - Backup for **either** key: `CHATBOT_FALLBACK_API_URL=https://api.cline.bot/api/v1`
   with the Cline pass key, `CHATBOT_FALLBACK_MODEL=cline-pass/deepseek-v4.1-flash-1017`
   and `DAILY_GUIDE_FALLBACK_MODEL=cline-pass/deepseek-v4-pro`.
@@ -150,6 +154,12 @@ yet loaded** — the process must be restarted from the hosting panel for the ne
   Keep `CHATBOT_FALLBACK_*` set; do not "simplify" it away.
 - Never print or commit the keys. They live in the live `.env` only; this
   checkout keeps them out (see `.gitignore`).
+- **Diagnose the error code, not the vibes** before "fixing" a key: 401/403 = the
+  key, 402 = the balance, 404 = the model id (e.g. `gemini-2.5-*` is retired for
+  new accounts), 429 = quota or rate limit (the Google Pro tier has **no** quota
+  on a free key, so a Pro-model test always looks dead), 503 = the provider is
+  busy. The full measured matrix lives in `gilbert/README.md` ("Choosing a model
+  against a live key").
 
 2026-11-10 (**casino withdrawal reserve, case-insensitive names, lookup
 indexes; surface unchanged at 119 commands / 17 cogs / 24 checks**). Uploaded

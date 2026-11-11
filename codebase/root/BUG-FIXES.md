@@ -26,6 +26,186 @@ Test:    the check that proves it (see "Verification" at the end).
 
 ---
 
+## The guide shipped the fallback document — 2026-11-11
+
+### The daily guide timed out on the pro tier, so the AI call looked dead
+
+**Symptom.** `daily_guide.md` began with
+`_Generated 2026-11-10T23:01:24 without the AI model._` and the document was the
+terse ~6.4k generated text instead of the model-written guide. The owner read it
+as "the API key is not working", but the same key answered persona replies and
+short probe calls normally, and the Cline dashboard showed an active key.
+
+**Cause.** Latency, not credentials. The guide ran on `deepseek-v4-pro` and
+inherited the persona `CHATBOT_TIMEOUT` of 240 s. Measured on the real guide
+prompt: **206 s for 12k characters**, and the production run spent **~229 s of
+the 240 s** budget. `generate_guide()` catches the failure and falls back to
+`fallback_guide()`, which is correct behaviour — but it is silent in the
+document, so the only visible trace was the `without the AI model` header. A
+slightly larger source, a colder cache or any provider jitter pushed the call
+over the limit, so the *same configuration* passed one night and failed the
+next.
+
+**Impact.** Quality, not money: the guide is documentation. But a day's guide is
+generated only once, so a timeout cost the full document and made a healthy key
+look broken — two sessions were spent chasing the wrong cause.
+
+**Fix.**
+- `DAILY_GUIDE_MODEL=deepseek-chat` (the V4.1-Flash tier behind the same key):
+  the same 12,378-character document in **16 s**, and **17.2 s** for the worst
+  case — a 59.6k-character source against the 60k `DAILY_GUIDE_SOURCE_CHARS` cap.
+- New **`DAILY_GUIDE_TIMEOUT`** (`DailySync.guide_timeout`, 0 = inherit
+  `CHATBOT_TIMEOUT`) passed to `GilbertAI(timeout=…)`, set to **600 s** live, so
+  the once-a-day job has its own budget and the Cline pro fallback tier also
+  fits. Persona latency is untouched.
+- `gilbert/ai.py` also retries the whole call once on `CHATBOT_FALLBACK_*` when
+  the primary produces nothing, so an out-of-credit or revoked key no longer
+  lands on the canned line either.
+
+**Test.** `checks/check_daily_sync.py`: the guide hands `api_url`, `api_key`,
+`fallback_model` and `timeout` to the client (stubbed, no network), the timeout
+defaults to the shared value, `DAILY_GUIDE_TIMEOUT` parses, a negative value
+means "shared". `checks/check_gilbert.py`: primary-then-backup routing, a healthy
+primary never calls the backup, an identical backup is not retried, a backup
+alone still enables the client.
+
+---
+
+## The house could be drained mid-hand — 2026-11-10
+
+### `/casino withdraw` ignored the hands still in play
+
+**Symptom.** An admin cleared the Casino between games with `/casino withdraw`.
+Within the minute a player who still had a blackjack hand or a poker table open
+lost that stake: the settlement could not pay out (`InsufficientFunds` from
+`debit_casino`), the hand had already been closed, and nothing gave the credits
+back. After a restart the same balance funded the startup refund, so the
+interrupted-hand refund failed too and logged "Could not refund blackjack hand".
+
+**Cause.** `Casino.withdraw` read `get_casino_balance()` and debited whatever it
+saw. The house also holds the *stakes* of the hands in play, and it still owes
+the **return** on them — `blackjack.max_gross()` (3:2 on a natural) and
+`poker.max_gross()` (the player's final stack, up to every chip at the table).
+The deal-time cover test (`casino.cover_problem`) guarantees each dealt hand *can*
+be paid; the withdrawal was the one path that could take that guarantee away.
+
+**Impact.** Real credit loss, not just a failed reply: `close_blackjack_hand()`
+flips the hand to `settled` before `finish_wager()` pays, so a payout that raises
+leaves the stake with the house for good. Reachable whenever an admin withdraws
+while any hand is open.
+
+**Fix.**
+- `Database.open_hand_stakes(guild_id)` sums the open stakes per game for one
+  guild in a single query (`blackjack_hands UNION ALL poker_hands`, both
+  `status = 'open'`).
+- `casino.reserve_for_open_hands(blackjack_stakes, poker_stakes)` prices the
+  worst case through the same `max_gross()` helpers the deal uses, so a dealt
+  hand can always be paid; `casino.reserve_note()` names the game holding the
+  credits for the refusal message.
+- `Casino.withdraw` reads the house balance, the open hands and the debit inside
+  **one** transaction, and keeps two refusals apart: `Insufficient Funds` when the
+  credits are simply not there, `House Reserve` when they exist but are owed to a
+  hand ("at most N can be withdrawn until those hands are settled").
+- `/casino balance` adds a `Held for open hands` field
+  (`gambling_ui.casino_floor(house, reserved=…, reserved_note=…)`) so the reserve
+  is visible before an admin types an amount. The public balance still means
+  "credits the house holds".
+
+**Test.** `checks/check_casino.py`, section "a withdrawal keeps the open hands'
+reserve": a 4,000 blackjack hand and a 2,000 poker table reserve exactly 18,000;
+one credit over the free balance is refused with no balance change and no ledger
+row; the free balance is withdrawable; the two worst-case wins then pay out of
+the reserve exactly (conservation holds, house ends at 0, no hand left open). It
+also pins the `/casino balance` field and the unchanged `Insufficient Funds`
+message for a house that is simply short.
+
+---
+
+## Two accounts could share a name — 2026-11-10
+
+### Case-insensitive lookups over a case-sensitive `UNIQUE`
+
+**Symptom.** `/nation show aurum` and `/nation show Aurum` could return different
+rows (or the same row twice while a rename appeared to do nothing). A renamed
+account could become unreachable while its twin answered every lookup. Nothing in
+the ledger looked wrong.
+
+**Cause.** `nations`/`kingdoms` declare `UNIQUE (guild_id, name)`, which SQLite
+compares with the BINARY collation, while every read (`get_nation()`,
+`get_kingdom()`, `utils.resolve_account()`, autocomplete) uses `COLLATE NOCASE`.
+The commands checked for an existing name first, but that check and the write
+were separate statements: two requests in the same instant — a direct `/nation
+add` and a petition approval, or two `/kingdom rename`s — could both pass it and
+insert `Foo` and `foo`.
+
+**Impact.** Data integrity and support burden. Both rows are real accounts with
+real balances, but only one of them can ever be found by name: the other cannot
+receive a transfer, hold a contract or be renamed, and `/leaderboard` lists two
+entries that look identical. No credits are created or destroyed.
+
+**Fix.**
+- `Database._create_account()` (behind `create_nation` / `create_kingdom`)
+  performs the uniqueness test **inside** the insert:
+  `INSERT … SELECT … WHERE NOT EXISTS (SELECT 1 FROM … WHERE guild_id = ? AND
+  name = ? COLLATE NOCASE)`, and raises the new `database.NameTaken` when it
+  wrote no row. One writer means exactly one winner, with no extra table lock.
+- `Database.rename_account()` re-reads the row and runs the same `COLLATE NOCASE`
+  clash test inside its transaction; a pure case change of an account's own name
+  is still allowed. It raises `NameTaken` instead of writing a shadow row.
+- Callers answer with the established `Name Taken` embed: `creation.py`
+  (`_approve` catches `NameTaken` alongside `sqlite3.IntegrityError` and closes
+  the petition as `failed`), `/nation add`, `/kingdom add`, `/nation rename` and
+  `/kingdom rename`.
+- **Legacy pairs are not touched.** A database that already holds `Foo`/`foo`
+  keeps both rows (deleting one would erase a real balance); it simply cannot
+  grow a third, and the owner can decide what to do with the pair.
+
+**Test.** `checks/check_creation_race.py` adds the case section: a case variant of
+an existing name is refused and leaves one row; three founders with three casings
+produce one account and one bonus row; the same for kingdoms; a rename onto
+another account's case variant is refused while a self-recasing is allowed; and
+`/nation rename` reports `Name Taken` instead of surfacing the exception.
+
+---
+
+## Every name lookup scanned the table — 2026-11-10
+
+**Symptom.** Nothing broken, but the cost of every `/nation show`, `/transfer`,
+`/contract request`, autocomplete and `/leaderboard` grew with the number of
+accounts, and the panel's `royal_bank.db-wal` was large after an unclean stop.
+
+**Cause.** Three separate things:
+
+1. The only index on a name was the auto-index behind `UNIQUE (guild_id, name)`.
+   It is BINARY, and a `COLLATE NOCASE` comparison cannot use a BINARY index, so
+   `get_nation`/`get_kingdom` scanned every row of the guild.
+2. `/leaderboard` orders by `balance DESC, name COLLATE NOCASE` with no matching
+   index, so SQLite built a temporary B-tree per call.
+3. `wal_autocheckpoint` keeps the WAL bounded while the process runs, but a
+   panel kill skips the checkpoint entirely.
+
+**Impact.** Latency only — every query still returned the right answer.
+
+**Fix.** Schema entries (created by `connect()` on the live database, no data
+migration): `idx_nations_name_nocase (guild_id, name COLLATE NOCASE)`,
+`idx_kingdoms_name_nocase`, `idx_nations_balance (guild_id, balance DESC, name
+COLLATE NOCASE)`, `idx_kingdoms_balance`, plus `idx_blackjack_guild` and
+`idx_poker_guild (guild_id, status)` for the withdrawal reserve and the startup
+refund. Measured on a throwaway database with 20,000 nations and 20,000 kingdoms
+(2,000 mixed-case lookups each): nation lookup **3.61 ms → 0.50 ms**, kingdom
+lookup **3.67 ms → 0.47 ms**, leaderboard top-25 **5.33 ms → 0.60 ms** (7.3×,
+7.9×, 9.0×). `Database.close()` also runs `PRAGMA wal_checkpoint(TRUNCATE)` and
+`PRAGMA optimize` (both best effort), and `Database.quick_check()` is logged by
+`RoyalCourt.setup_hook()` at boot together with the database and WAL sizes.
+
+**Test.** `checks/check_database.py` asserts each index exists in
+`PRAGMA index_list`, that `EXPLAIN QUERY PLAN` for a nation name lookup names
+`idx_nations_name_nocase`, that the leaderboard query names
+`idx_kingdoms_balance`, that `quick_check()` answers `ok`, and that
+`open_hand_stakes()` is `{blackjack: 0, poker: 0}` on a quiet house.
+
+---
+
 ## The negotiators forgot their own case — 2026-11-10
 
 ### `contracts.history` was a sliding window with no floor
@@ -1814,13 +1994,15 @@ printed.
    went unnoticed; they are now a permanent suite with a runner. They are still
    not run automatically — nothing invokes them at boot or on a schedule, so a
    regression is only caught when someone runs `checks/run_all.py`. Wiring them
-   into a pre-deploy step is the obvious next improvement.
-7. **Account name uniqueness is case-sensitive in SQLite but case-insensitive
-   in every query.** `UNIQUE (guild_id, name)` would allow `Foo` and `foo`
-   side by side, while `get_nation` / `get_kingdom` use `COLLATE NOCASE` and
-   would return one of them. Every create and rename path checks first, so this
-   needs two near-simultaneous requests to hit; a `COLLATE NOCASE` unique index
-   plus a duplicate scan is the clean fix.
+   into a pre-deploy step is the obvious next improvement. (The bot does run
+   `PRAGMA quick_check` at boot since 2026-11-10, but that is a corruption alarm,
+   not the suite.)
+7. **Account-name uniqueness — resolved 2026-11-10.** `UNIQUE (guild_id, name)`
+   used to be case-sensitive while every lookup was `COLLATE NOCASE`, so `Foo`
+   and `foo` could coexist and one was unreachable. `Database._create_account()`
+   and `rename_account()` now run the `COLLATE NOCASE` test inside their own
+   transaction and raise `NameTaken`; see "Two accounts could share a name"
+   above. Legacy `Foo`/`foo` pairs are left in place on purpose.
 8. **The six-nation kingdom cap is checked before the update — resolved
    2026-11-07.** `cogs/kingdom.py` used to count `nations_in_kingdom()` and then
    call `set_nation_kingdom()` outside a transaction, so two simultaneous admin
@@ -1829,11 +2011,11 @@ printed.
    and writes the audit row inside one `BEGIN IMMEDIATE` transaction and returns
    `ok`/`already`/`full`/`missing`; `checks/check_load.py` fires six simultaneous
    joins at one free slot and sees exactly one winner and six members.
-9. **`/casino withdraw` can strand an open hand's stake.** The command only
-   checks the current house balance, not the worst-case payout reserve of open
-   blackjack/poker hands. Draining the house mid-hand makes settlement (and a
-   restart refund, which debits the house) fail until it is funded again. The
-   deal already requires cover; a withdraw-time reserve check would close it.
+9. **`/casino withdraw` could strand an open hand's stake — resolved 2026-11-10.**
+   The command only checked the current house balance, not the worst-case payout
+   of open blackjack/poker hands. It now reads `Database.open_hand_stakes()` and
+   `casino.reserve_for_open_hands()` inside its transaction and refuses with
+   `House Reserve`; see "The house could be drained mid-hand" above.
 10. **The Turso mirror is append-only, so it keeps a deleted member's ledger.**
    `Database.delete_individual()` deliberately deletes the wallet's
    `transactions` rows with the balance, but `DailySync.sync_to_turso()` only
@@ -1970,17 +2152,17 @@ python3 -m pyflakes .          # unused names, undefined references
 | `checks/check_fishing.py` | `/fish` random 20–100 range, pure cap/short-guild refusals, guarded Fishing Guild balance, end-to-end catch, both ledger sides, conservation, no-wallet and admin fund/withdraw |
 | `checks/check_poker.py` | evaluator category order, wheel, best five of seven, side pots and odd chips, uncalled-bet refunds, folded seats never paid, short all-ins not reopening raises, blind posting and the big blind's option, flop resets without losing the pot, 400 seeded hands with chips conserved and every hand terminating |
 | `checks/check_shop.py` | shop pricing (slot-limit shulker fee, nation 20% / kingdom 25%, the Union 50% split that never stacks, clamping, bundle expansion, family bans, slots), then `/shop buy`, `/shop order`, `/shop markredeemed`, `/kit create` and `/kit buy` end to end: exact debit, order rows, concrete delivered components, redeem-key shape, DM'd key, ledger row, short-treasury/banned-item/non-leader refusals, kit cooldown and double redemption |
-| `checks/check_gilbert.py` | DeepSeek model alias/base-URL normalisation, disabled-without-key, tier boundaries, prompt context facts (including soldiers), the friendlier tone, the membership-never-required rule, and Albert's contract briefing |
+| `checks/check_gilbert.py` | DeepSeek model alias/base-URL normalisation, disabled-without-key, tier boundaries, prompt context facts (including soldiers), the friendlier tone, the membership-never-required rule, Albert's contract briefing, both reply envelopes, per-instance model/temperature/token/provider overrides, the primary-then-backup routing (a dead primary falls back, a healthy one never does, an identical backup is dropped, a backup alone still enables the client), the provider failure hints and the lookup trigger/format/cap |
 | `checks/check_cogs.py` | concurrent `/daily` claims, import and cog-load smoke test, asserts 115 commands and 16 cogs, that `/faction` is the only faction command, and that `/faction contract` exposes exactly `faction`/`account`/`proposal`/`budget` |
 | `checks/check_creation_race.py` | concurrent creation yields one account and one bonus ledger row; an approval name race closes the petition as `failed`; `/nation add` and `/kingdom add` report the same clash instead of crashing |
 | `checks/check_runner.py` | the runner rejects a bare exit or an `ERROR:` line with no summary instead of reporting a false pass |
-| `checks/check_daily_sync.py` | endpoint normalisation (`libsql://` → `https` pipeline), libSQL value encoding, identifier quoting, idempotent `CREATE TABLE`, the guide prompt/source/fallback/truncation, the env switches (mirror, runtime hour, run-on-start, temp dir, checkpoint), `guild_id` resolution for `daily_guides`, and the disabled-without-credentials path |
+| `checks/check_daily_sync.py` | endpoint normalisation (`libsql://` → `https` pipeline), libSQL value encoding, identifier quoting, idempotent `CREATE TABLE`, the guide prompt/source/fallback/truncation, the env switches (mirror, runtime hour, run-on-start, temp dir, checkpoint), `guild_id` resolution for `daily_guides`, the disabled-without-credentials path, and the guide's own provider/key/backup model/`DAILY_GUIDE_TIMEOUT` handing the right arguments to `GilbertAI` |
 
 Every script builds its own throwaway SQLite database in a temp directory. None
 of them read `royal_bank.db`, so the live file is never touched.
 `check_poker.py` needs no database at all: `poker.py` is pure.
 
-All 24 scripts pass as of 2026-11-10, against the working copy and against a
+All 24 scripts pass as of 2026-11-11, against the working copy and against a
 pulled copy of the deployed tree. When you fix a
 bug, add its check here — a fix without a check is how the
 transaction-isolation defect survived this long.

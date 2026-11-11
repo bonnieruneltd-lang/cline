@@ -1327,10 +1327,9 @@ are historical: where an older one says "not uploaded" or quotes a rate such as
 **What changed.** All chat AIs (Gilbert + Albert, and `/poker`'s bot names) moved
 to Google AI Studio `gemini-3.5-flash` (0.75, 16k, 240 s) on a Google Studio key;
 the once-a-day summarising guide moved to DeepSeek `deepseek-chat` (0.25, 16k,
-600 s)
-on its **own** `DAILY_GUIDE_API_KEY`. The Cline pass key and its two models are
-now the **backup for either key**, so a key that runs dry or is revoked no longer
-silences a persona or drops the guide to `fallback_guide()`.
+600 s) on its **own** `DAILY_GUIDE_API_KEY`. The Cline pass key and its two
+models are now the **backup for either key**, so a key that runs dry or is
+revoked no longer silences a persona or drops the guide to `fallback_guide()`.
 
 **Code.** `gilbert/ai.py` reads `CHATBOT_FALLBACK_API_URL` / `_API_KEY` /
 `_MODEL`; `GilbertAI.complete()` tries the primary and, on *any* failure (401,
@@ -1341,12 +1340,41 @@ silences a persona or drops the guide to `fallback_guide()`.
 of the personas'. An identical backup configuration is dropped rather than
 retried twice. `provider_hint(401)` now names both keys.
 
-**Verified.** `checks/run_all.py` **24/24**, `compileall`/`pyflakes` clean, and
-`checks/check_gilbert.py` / `check_daily_sync.py` pin the new routing with stubs
-(no network). Live through the real client: a persona reply from Gemini in 8.0 s,
-a guide snippet from DeepSeek in 4.4 s, an invalid Google key answered by the
-Cline flash fallback in 0.8 s, and an invalid DeepSeek key answered by the Cline
-pro fallback in 2.5 s.
+**Second pass — why the guide kept shipping the fallback.** The owner reported
+"the key is active but nothing is generated", and the live state agreed: the
+guide on the host still carried the 2026-11-10 23:01 header
+`_Generated … without the AI model._`. The key was never the problem. A probe of
+the running deployment showed the guide call needed **206 s for 12k characters**
+on `deepseek-v4-pro` and the production run spent **~229 s of the 240 s**
+`CHATBOT_TIMEOUT`, so on any slower day the request hit the timeout and
+`fallback_guide()` was written silently. `deepseek-chat` (the V4.1-Flash tier
+behind the same key) wrote the same document in **16 s**, and **17.2 s** for the
+worst case — a 59.6k-character source, the 60k `DAILY_GUIDE_SOURCE_CHARS` cap.
+Two changes followed: the guide now runs on the flash tier, and the new
+`DAILY_GUIDE_TIMEOUT` (0 = inherit `CHATBOT_TIMEOUT`) gives it a **600 s** budget
+of its own, so the Cline pro fallback fits too when it is used. After the
+02:48 restart the live guide regenerated **AI-written, 20,471 characters at
+02:52**.
+
+**What the key can actually run** (measured, so nobody re-litigates it):
+`gemini-3.5-flash` **OK 5–9 s**, `gemini-3.1-flash-lite` **OK 0.7 s**,
+`gemini-3.6-flash` OK 34 s, `gemini-3.7-flash` / `3.8-flash` **503 high
+demand**, `gemini-pro-latest` / `gemini-4-carbon` / `gemini-3.1-pro-preview`
+**429 quota** (the Pro tier is not entitled on a free key — a key test with a Pro
+model always looks dead), and `gemini-2.5-flash` / `2.5-pro` **404 no longer
+available to new users**. The DeepSeek key answers on `api.deepseek.com` *and* on
+the Cline gateway. Re-run the same matrix from `gilbert/README.md` before
+switching models.
+
+**Verified.** `checks/run_all.py` **24/24** (working copy **and** a pull of the
+deployed tree), `compileall`/`pyflakes` clean; `checks/check_gilbert.py` and
+`check_daily_sync.py` pin the fallback routing and the guide timeout with stubs
+(no network). Live with the deployed `.env`: Gemini persona reply 5.9 s, the real
+Gilbert system prompt 9.5 s / 2,458 chars, DeepSeek guide 2.3 s short and 17.2 s
+worst case, a dead Google key answered by the Cline flash fallback in 0.7 s and a
+dead DeepSeek key by the Cline pro fallback in 1.7 s. Uploaded in two passes with
+`.bak-20261111-022556` and `.bak-20261111-025321` backups, every file SHA-256
+verified after the write; `.env` backed up on both passes too.
 
 ### 2026-11-10 — The house cannot be drained mid-hand, names are unique ignoring case, lookups are indexed (uploaded; **restart pending**)
 

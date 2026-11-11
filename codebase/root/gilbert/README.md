@@ -107,21 +107,49 @@ same key (`DAILY_GUIDE_MODEL`, `DAILY_GUIDE_TEMPERATURE`,
 `DAILY_GUIDE_MAX_TOKENS`).
 
 **Live choice (2026-11-11):** personas on Google AI Studio
-`gemini-3.5-flash` (0.75, 16,000, 240 s) — a measured 5.8–8.0 s per negotiation
-reply; the guide on DeepSeek `deepseek-chat` (0.25, 16,000, 600 s) with its own key
-(`DAILY_GUIDE_API_KEY`). Measured on the real guide prompt: `deepseek-chat` wrote
-12,378 chars in 16 s; `deepseek-v4-pro` needed 206 s for the same document and
-would have blown the 240 s persona timeout on the full source, so the flash tier
-plus its own 600 s budget is the guide setting. The backup for both is the Cline
-pass key: the personas
-fall back to `cline-pass/deepseek-v4.1-flash-1017`, the guide to
+`gemini-3.5-flash` (0.75, 16,000, 240 s) — a measured 5.8–9.5 s per negotiation
+reply; the guide on DeepSeek `deepseek-chat` (0.25, 16,000, 600 s) with its own
+key (`DAILY_GUIDE_API_KEY`). The backup for both is the Cline pass key: the
+personas fall back to `cline-pass/deepseek-v4.1-flash-1017`, the guide to
 `cline-pass/deepseek-v4-pro` (`DAILY_GUIDE_FALLBACK_MODEL`). Verified live: a
-deliberately invalid Google key answered through the Cline fallback in 0.8 s and
-an invalid DeepSeek key through the Cline pro tier in 2.5 s. The earlier live
+deliberately invalid Google key answered through the Cline fallback in 0.7 s and
+an invalid DeepSeek key through the Cline pro tier in 1.7 s. The earlier live
 choice (2026-11-06) was `cline-pass/deepseek-v4.1-flash-1017` for the personas
 (0.75, 16,000, 240 s) and `cline-pass/deepseek-v4-pro` for the guide (0.25,
 16,000); `cline-pass/deepseek-v4.1-pro` does not exist — the alias is
 `cline-pass/deepseek-v4-pro`.
+
+### Choosing a model against a live key
+
+"the key is active but nothing is generated" is almost never the key. Run the
+matrix below before changing any `.env` value — each row is a real response from
+the 2026-11-11 Google Studio key, with `POST
+https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`:
+
+| Model | Result | Meaning |
+|---|---|---|
+| `gemini-3.5-flash` | 200 in 5–9 s | ✅ the live persona model |
+| `gemini-3.1-flash-lite` | 200 in 0.7 s | ✅ fastest fallback candidate, plainer prose |
+| `gemini-3.6-flash` | 200 in 34 s | too slow for a negotiation |
+| `gemini-3.7-flash`, `gemini-3.8-flash` | **503 high demand** | Google-side spike, retry later — *not* a key problem |
+| `gemini-pro-latest`, `gemini-4-carbon`, `gemini-3.1-pro-preview` | **429 quota exceeded** | the Pro tier is not entitled on a free key; a key test on a Pro model always looks dead |
+| `gemini-2.5-flash`, `gemini-2.5-pro` | **404 no longer available to new users** | retired for this account; use a 3.x model |
+| `gemini-flash-latest` | read timeout at 60 s | an alias, not a model — do not use it for replies |
+
+Read the error, not the vibes: **401/403** really is the key, **402** is the
+balance, **404** is the model id, **429** is quota or rate limit, **503** is the
+provider, and an empty `200` with `finish_reason: "length"` is `max_tokens` being
+spent on reasoning. `provider_hint()` prints that diagnosis in the log.
+
+**Latency decides the guide's model, not quality.** On the same 12k-character
+document `deepseek-v4-pro` took **206 s** and `deepseek-chat` **16 s**; the
+production guide (59.6k-char source, the `DAILY_GUIDE_SOURCE_CHARS` cap) took
+**17.2 s** on the flash tier. The old 240 s `CHATBOT_TIMEOUT` was the actual
+defect: a pro-tier guide run spent ~229 s of it and, on any slower day, timed out
+into `fallback_guide()` — a terse document that says
+`_Generated … without the AI model._` at the top. That string in
+`daily_guide.md` means the call failed, not that the key is dead. The guide now
+has `DAILY_GUIDE_TIMEOUT=600` of its own, so the pro fallback tier also fits.
 
 ### Two traps worth knowing
 

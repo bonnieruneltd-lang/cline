@@ -1,11 +1,15 @@
 # Agent guide — optimized read-first version
 
 > **Current state (2026-11-11):** 119 commands / 17 cogs, all 24 checks green
-> on this checkout. **AI providers switched 2026-11-11 (uploaded, restart
-> pending):** the personas (Gilbert + Albert, `/poker` names) run on Google AI
-> Studio `gemini-3.5-flash`; the daily guide runs on DeepSeek `deepseek-chat`
-> with its own `DAILY_GUIDE_API_KEY`; the Cline pass key is the **backup for
-> either** (`CHATBOT_FALLBACK_*`, `DAILY_GUIDE_FALLBACK_MODEL`), and
+> on this checkout. **AI providers switched 2026-11-11 (uploaded; the 02:48
+> restart already loaded the first pass, the 02:53 pass needs the next one):**
+> the personas (Gilbert + Albert, `/poker` names) run on Google AI Studio
+> `gemini-3.5-flash`; the daily guide runs on DeepSeek `deepseek-chat` with its
+> own `DAILY_GUIDE_API_KEY` and `DAILY_GUIDE_TIMEOUT=600` (the pro tier took
+> 206 s for 12k chars and kept hitting the 240 s persona timeout — a guide that
+> says `_Generated … without the AI model._` means it timed out, not that the key
+> is dead); the Cline pass key is the **backup for either**
+> (`CHATBOT_FALLBACK_*`, `DAILY_GUIDE_FALLBACK_MODEL`) and
 > `GilbertAI.complete()` retries any failed primary once there. **Also uploaded
 > 2026-11-10 (stamp `20261110-164655`, 11 files), restart pending:**
 > `/casino withdraw` keeps a worst-case reserve for open
