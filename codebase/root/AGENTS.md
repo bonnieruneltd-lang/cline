@@ -134,9 +134,12 @@ backup; surface unchanged at 119 commands / 17 cogs**). Working tree green:
 yet loaded** — the process must be restarted from the hosting panel for the new
 `gilbert/ai.py` fallback path and the `.env` provider switch to take effect.
 
-- Personas (`/contract` negotiations, `/poker` bot names): Google AI Studio
-  `https://generativelanguage.googleapis.com/v1beta/openai`,
-  `CHATBOT_MODEL=gemini-3.5-flash`, 0.75, 16,000 tokens, 240 s.
+- Personas (`/contract` negotiations, `/poker` bot names): Cline gateway
+  `https://api.cline.bot/api/v1`, `CHATBOT_MODEL=cline-pass/deepseek-v4-pro`,
+  0.75, 16,000 tokens, 240 s. This is the **smarter** model the owner asked for:
+  the Google free key returns 429 `free_tier_requests, limit: 0` for every Pro
+  model, `3.7/3.8-flash` are 503/timeout and `3.6-flash` took 48 s; the Cline
+  pro tier answered the real persona prompt in 9–16 s with correct rules.
 - Daily guide: DeepSeek `https://api.deepseek.com` with its own
   `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-chat`, 0.25, 16,000,
   `DAILY_GUIDE_TIMEOUT=600`. **Never put the guide back on the pro tier without
@@ -145,9 +148,9 @@ yet loaded** — the process must be restarted from the hosting panel for the ne
   the 59.6k-char worst case in 17 s. A guide that starts with
   `_Generated … without the AI model._` means the call failed or timed out — it
   does **not** mean the key is dead.
-- Backup for **either** key: `CHATBOT_FALLBACK_API_URL=https://api.cline.bot/api/v1`
-  with the Cline pass key, `CHATBOT_FALLBACK_MODEL=cline-pass/deepseek-v4.1-flash-1017`
-  and `DAILY_GUIDE_FALLBACK_MODEL=cline-pass/deepseek-v4-pro`.
+- Backup for **either** key: `CHATBOT_FALLBACK_API_URL=https://generativelanguage.googleapis.com/v1beta/openai`
+  with the Google Studio key, `CHATBOT_FALLBACK_MODEL=gemini-3.5-flash` and
+  `DAILY_GUIDE_FALLBACK_MODEL=gemini-3.5-flash` (5–9 s, other provider).
 - `GilbertAI.complete()` now retries the whole call once on the backup after any
   primary failure (401/402/429/5xx/timeout/open breaker) — that is what stops a
   dry free key from posting the canned persona line for the rest of the day.

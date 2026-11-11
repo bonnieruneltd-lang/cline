@@ -106,33 +106,38 @@ overrides, which is how `DailySync` runs the guide on a different model from the
 same key (`DAILY_GUIDE_MODEL`, `DAILY_GUIDE_TEMPERATURE`,
 `DAILY_GUIDE_MAX_TOKENS`).
 
-**Live choice (2026-11-11):** personas on Google AI Studio
-`gemini-3.5-flash` (0.75, 16,000, 240 s) — a measured 5.8–9.5 s per negotiation
-reply; the guide on DeepSeek `deepseek-chat` (0.25, 16,000, 600 s) with its own
-key (`DAILY_GUIDE_API_KEY`). The backup for both is the Cline pass key: the
-personas fall back to `cline-pass/deepseek-v4.1-flash-1017`, the guide to
-`cline-pass/deepseek-v4-pro` (`DAILY_GUIDE_FALLBACK_MODEL`). Verified live: a
-deliberately invalid Google key answered through the Cline fallback in 0.7 s and
-an invalid DeepSeek key through the Cline pro tier in 1.7 s. The earlier live
-choice (2026-11-06) was `cline-pass/deepseek-v4.1-flash-1017` for the personas
-(0.75, 16,000, 240 s) and `cline-pass/deepseek-v4-pro` for the guide (0.25,
-16,000); `cline-pass/deepseek-v4.1-pro` does not exist — the alias is
-`cline-pass/deepseek-v4-pro`.
+**Live choice (2026-11-11, second pass):** personas on the Cline pass **pro**
+tier `cline-pass/deepseek-v4-pro` via `https://api.cline.bot/api/v1` (0.75,
+16,000, 240 s) — a measured 9–16 s per negotiation reply, and correct on the
+public-benefit rule, the 1/1 nation quota and a 400k-vs-1M treasury. The owner
+asked for a smarter model than `gemini-3.5-flash`: every Google Pro model is
+429 `free_tier_requests, limit: 0`, `3.7/3.8-flash` are 503/timeout and
+`3.6-flash` took 48 s on the same prompt. The guide stays on DeepSeek
+`deepseek-chat` (0.25, 16,000, 600 s) with its own key. The **cross-provider
+backup** is now Google AI Studio `gemini-3.5-flash` (5–9 s): the personas use it
+through `CHATBOT_FALLBACK_*`, the guide through `DAILY_GUIDE_FALLBACK_MODEL`.
+The earlier live choice (2026-11-11, first pass) was `gemini-3.5-flash` for the
+personas with the Cline pass as the backup; the 2026-11-06 choice was
+`cline-pass/deepseek-v4.1-flash-1017`. `cline-pass/deepseek-v4.1-pro` does not
+exist — the alias is `cline-pass/deepseek-v4-pro`.
 
 ### Choosing a model against a live key
 
 "the key is active but nothing is generated" is almost never the key. Run the
-matrix below before changing any `.env` value — each row is a real response from
-the 2026-11-11 Google Studio key, with `POST
-https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`:
+matrix below before changing any `.env` value — each row is a real response
+measured on 2026-11-11. The Google rows used `POST
+https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`; the
+`cline-pass/*` rows used `POST https://api.cline.bot/api/v1/chat/completions`:
 
 | Model | Result | Meaning |
 |---|---|---|
-| `gemini-3.5-flash` | 200 in 5–9 s | ✅ the live persona model |
+| `cline-pass/deepseek-v4-pro` | 200 in 9–16 s | ✅ the live persona model (Cline gateway; the client unwraps its `data{}` envelope) |
+| `cline-pass/deepseek-v4.1-flash-1017` | 200 in 7–8 s | the previous persona model: faster but plainer prose |
+| `gemini-3.5-flash` | 200 in 5–9 s | ✅ the live cross-provider **backup** |
 | `gemini-3.1-flash-lite` | 200 in 0.7 s | ✅ fastest fallback candidate, plainer prose |
-| `gemini-3.6-flash` | 200 in 34 s | too slow for a negotiation |
-| `gemini-3.7-flash`, `gemini-3.8-flash` | **503 high demand** | Google-side spike, retry later — *not* a key problem |
-| `gemini-pro-latest`, `gemini-4-carbon`, `gemini-3.1-pro-preview` | **429 quota exceeded** | the Pro tier is not entitled on a free key; a key test on a Pro model always looks dead |
+| `gemini-3.6-flash` | 200 in 34–48 s | too slow for a negotiation |
+| `gemini-3.7-flash`, `gemini-3.8-flash` | **503 / read timeout** | Google-side spike, retry later — *not* a key problem |
+| `gemini-pro-latest`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-3.1-pro-preview` | **429 quota exceeded** (`free_tier_requests, limit: 0`) | the Pro tier is not entitled on a free key; a key test on a Pro model always looks dead |
 | `gemini-2.5-flash`, `gemini-2.5-pro` | **404 no longer available to new users** | retired for this account; use a 3.x model |
 | `gemini-flash-latest` | read timeout at 60 s | an alias, not a model — do not use it for replies |
 

@@ -207,8 +207,8 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `CHATBOT_MAX_CONCURRENCY` | Simultaneous chat-bot calls the bot will make (default 8, clamped 1-64) |
 | `CHATBOT_RETRIES` | Retries for a 429/5xx chat-bot reply (default 2, clamped 0-4) |
 | `CHATBOT_FALLBACK_API_URL` | Backup chat-bot base URL used when the primary gives no reply |
-| `CHATBOT_FALLBACK_API_KEY` | Backup chat-bot key (the Cline pass key on the live deployment) |
-| `CHATBOT_FALLBACK_MODEL` | Backup model; for the personas `cline-pass/deepseek-v4.1-flash-1017` |
+| `CHATBOT_FALLBACK_API_KEY` | Backup chat-bot key (the Google AI Studio key on the live deployment) |
+| `CHATBOT_FALLBACK_MODEL` | Backup model; for the personas `gemini-3.5-flash` |
 | `API_TOKEN` | Shared bearer token for the Forge mod |
 | `API_HOST` | HTTP bind address |
 | `API_PORT` | HTTP port |
@@ -258,14 +258,14 @@ Both personas and the guide speak the same OpenAI-compatible protocol
 
 | Role | Live setting | Why |
 |---|---|---|
-| Gilbert + Albert | `CHATBOT_MODEL=gemini-3.5-flash` via Google AI Studio (`https://generativelanguage.googleapis.com/v1beta/openai`), 0.75, 16k, 240 s | A player watches "typing…", so latency wins: measured 5.8–8.0 s and correct on the leverage cap, tranche and case ID |
+| Gilbert + Albert | `CHATBOT_API_URL=https://api.cline.bot/api/v1`, `CHATBOT_MODEL=cline-pass/deepseek-v4-pro`, 0.75, 16k, 240 s | The owner asked for a smarter model. Google's Pro tier is **429 free-tier limit 0**, `3.7/3.8-flash` are 503/timeout and `3.6-flash` took 48 s; Cline's pro tier answered the same persona prompt correctly in **9–16 s** (public-benefit refusal, 1/1 quota, 400k-vs-1M treasury) and stayed in character on both meta-question probes |
 | Daily guide | `DAILY_GUIDE_API_URL=https://api.deepseek.com` + its own `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-chat`, `DAILY_GUIDE_TIMEOUT=600`, 0.25, 16k | A separate key means it can run dry without silencing the personas; the *flash* tier wrote the same 12k-char document in 16 s where `deepseek-v4-pro` took 206 s (inside the 240 s persona timeout by luck, not by design) |
-| Backup (both) | `CHATBOT_FALLBACK_API_URL=https://api.cline.bot/api/v1`, the Cline pass key, `CHATBOT_FALLBACK_MODEL=cline-pass/deepseek-v4.1-flash-1017`, `DAILY_GUIDE_FALLBACK_MODEL=cline-pass/deepseek-v4-pro` | A revoked or empty primary key retries once here instead of posting the canned line; verified at 0.8 s and 2.5 s |
+| Backup (both) | `CHATBOT_FALLBACK_API_URL=https://generativelanguage.googleapis.com/v1beta/openai`, the Google Studio key, `CHATBOT_FALLBACK_MODEL=gemini-3.5-flash`, `DAILY_GUIDE_FALLBACK_MODEL=gemini-3.5-flash` | A failed Cline or DeepSeek call retries once on the other provider instead of posting the canned line; 3.5-flash answers in 5–9 s |
 
 `DAILY_GUIDE_MODEL` / `_TEMPERATURE` / `_MAX_TOKENS` are **overrides only**, and
 `DAILY_GUIDE_API_URL` / `_API_KEY` optionally move the guide to its own provider.
 Blank guide values inherit the persona settings, so one shared key still works.
-`CHATBOT_FALLBACK_*` applies the Cline pass key as the backup for *either* key.
+`CHATBOT_FALLBACK_*` applies the Google Studio key as the backup for *either* key.
 
 **Reasoning models need a big `max_tokens`.** The cline-pass and Gemini 3.x
 families think before they answer and the budget pays for both, so a small cap
@@ -1321,6 +1321,34 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-11 — Personas on the Cline pro tier for a smarter model (uploaded; **restart pending**)
+
+**Why.** The owner asked for a smarter persona model than `gemini-3.5-flash`.
+The Google key cannot run a Pro model: `gemini-3.1-pro-preview`,
+`gemini-pro-latest`, `gemini-4-carbon` and `gemini-4-argon` all answer **429**
+with `generate_content_free_tier_requests, limit: 0`; `3.7/3.8-flash` are
+503/timeout and `3.6-flash` took **48 s** on the persona prompt.
+
+**Measured.** On the real Gilbert system prompt plus a private-mansion proposal
+with 1/1 contracts used and a 400k Union treasury against a 1M budget, Cline
+`cline-pass/deepseek-v4-pro` answered correctly in **15.7 s** (public-benefit
+refusal, quota exhausted, treasury short, membership optional), and in **3.5 s**
+and **8.9 s** on the meta-question and opener probes. The shared client already
+unwraps the Cline `data{}` envelope.
+
+**Config.** `CHATBOT_*` now point at `https://api.cline.bot/api/v1` with
+`cline-pass/deepseek-v4-pro`; Google AI Studio `gemini-3.5-flash` is the
+cross-provider backup (`CHATBOT_FALLBACK_*`) for the personas and the guide
+(`DAILY_GUIDE_FALLBACK_MODEL=gemini-3.5-flash`). The guide itself stays on
+DeepSeek `deepseek-chat` with its own key. No code changed — a provider swap is
+`.env` only.
+
+**Verified.** A real `GilbertAI()` loaded from the new `.env` reports
+`model=cline-pass/deepseek-v4-pro`, `fallback=gemini-3.5-flash` and answered a
+live `READY` probe through the shared client. `checks/run_all.py` **24/24**,
+`compileall`/`pyflakes` clean. `.env` backed up as `.env.bak-20261111-233052`
+and re-read byte-identical; the hosting panel must restart to load it.
 
 ### 2026-11-11 — Personas cannot answer meta-questions out of role (uploaded; **restart pending**)
 

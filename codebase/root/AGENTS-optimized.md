@@ -1,15 +1,16 @@
 # Agent guide — optimized read-first version
 
 > **Current state (2026-11-11):** 119 commands / 17 cogs, all 24 checks green
-> on this checkout. **AI providers switched 2026-11-11 (uploaded; the 02:48
-> restart already loaded the first pass, the 02:53 pass needs the next one):**
-> the personas (Gilbert + Albert, `/poker` names) run on Google AI Studio
-> `gemini-3.5-flash`; the daily guide runs on DeepSeek `deepseek-chat` with its
-> own `DAILY_GUIDE_API_KEY` and `DAILY_GUIDE_TIMEOUT=600` (the pro tier took
-> 206 s for 12k chars and kept hitting the 240 s persona timeout — a guide that
-> says `_Generated … without the AI model._` means it timed out, not that the key
-> is dead); the Cline pass key is the **backup for either**
-> (`CHATBOT_FALLBACK_*`, `DAILY_GUIDE_FALLBACK_MODEL`) and
+> on this checkout. **AI (uploaded 2026-11-11; restart pending):** the personas
+> (Gilbert + Albert, `/poker` names) run on the Cline pass **pro** tier
+> `cline-pass/deepseek-v4-pro` (9–16 s; the Google free key cannot run a Pro
+> model — 429 limit 0 — and 3.6-flash took 48 s); the daily guide stays on
+> DeepSeek `deepseek-chat` with its own `DAILY_GUIDE_API_KEY` and
+> `DAILY_GUIDE_TIMEOUT=600` (the pro tier took 206 s for 12k chars and kept
+> hitting the 240 s persona timeout — a guide that says
+> `_Generated … without the AI model._` means it timed out, not that the key is
+> dead); Google AI Studio `gemini-3.5-flash` is the **cross-provider backup for
+> either** (`CHATBOT_FALLBACK_*`, `DAILY_GUIDE_FALLBACK_MODEL`) and
 > `GilbertAI.complete()` retries any failed primary once there. **Also uploaded
 > 2026-11-10 (stamp `20261110-164655`, 11 files), restart pending:**
 > `/casino withdraw` keeps a worst-case reserve for open
@@ -35,7 +36,7 @@ shop/kits, factions). Runs from the SFTP account `bl_7746.e75c1364` on
 ## Quick start
 ```
 python3 -m pip install -r requirements.txt   # discord.py, aiosqlite, python-dotenv, aiohttp
-python3 checks/run_all.py                    # whole suite: expect 23/23
+python3 checks/run_all.py                    # whole suite: expect 24/24
 python3 -m compileall -q .                   # syntax
 python3 -m pyflakes .                        # unused / undefined names
 ```
