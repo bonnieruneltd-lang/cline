@@ -488,7 +488,13 @@ check("a language-model disclaimer is caught",
 check("an administrative-AI claim is caught",
       looks_out_of_character("The UN Secretariat's Administrative AI remains online."))
 check("a provider name alone is caught",
-      looks_out_of_character("DeepSeek wrote that reply."))
+      looks_out_of_character("I am DeepSeek, your assistant."))
+check("a powered-by claim is caught",
+      looks_out_of_character("I am powered by Gemini."))
+check("a denial that names the providers passes",
+      not looks_out_of_character(
+          "There's no DeepSeek or Gemini on this end, just me: Gilbert."
+      ))
 check("an ordinary in-role reply passes",
       not looks_out_of_character("Right then, let's get this ticking over."))
 check("an in-role denial of the question passes",

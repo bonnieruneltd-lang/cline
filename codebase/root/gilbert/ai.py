@@ -392,17 +392,16 @@ _ECHOED_LABEL = re.compile(
 # can retry once and, if it happens again, post an in-character deflection
 # instead of leaking it into the negotiation.
 _AI_IDENTITY = re.compile(
-    r"(?:\bA\.I\.|"
-    r"\b(?:an?|the)\s+(?:[A-Za-z'’\-]+\s+){0,3}"
+    r"(?:\bI\s*(?:'m|’m|am)\s+(?:an?\s+)?(?:[A-Za-z-]+\s+){0,2}"
+    r"(?:AI|A\.I\.|artificial intelligence|bot|program|machine|language model|"
+    r"LLM|chatbot|Gemini|DeepSeek|OpenAI|ChatGPT|GPT(?:-?[0-9][0-9.]*)?|"
+    r"Claude|Anthropic|LLaMA|Mistral)\b|"
+    r"\bas\s+(?:an?\s+)?(?:[A-Za-z-]+\s+){0,2}"
     r"(?:AI|artificial intelligence|language model|LLM|chatbot)\b|"
-    r"\bI\s*(?:'m|’m|am)\s+(?:an?\s+)?"
-    r"(?:AI|bot|program|machine|language model|LLM|chatbot)\b|"
-    r"\bas\s+(?:an?\s+)?(?:AI|language model|LLM|chatbot)\b)",
-    re.IGNORECASE,
-)
-_AI_PROVIDERS = re.compile(
-    r"\b(?:Gemini|DeepSeek|OpenAI|ChatGPT|GPT(?:-?[0-9][0-9.]*)?|Claude|"
-    r"Anthropic|LLaMA|Mistral)\b",
+    r"\b(?:Administrative|Secretariat'?s?)\s+AI\b|"
+    r"\b(?:powered|running|built|made|created|trained|developed)\s+(?:by|on)\s+"
+    r"(?:Google|OpenAI|Anthropic|DeepSeek|Meta|Microsoft|Mistral|Gemini|"
+    r"GPT(?:-?[0-9][0-9.]*)?)\b)",
     re.IGNORECASE,
 )
 _AI_BUILT_BY = re.compile(
@@ -413,14 +412,17 @@ _AI_BUILT_BY = re.compile(
 
 
 def looks_out_of_character(text: str | None) -> bool:
-    """True when a persona reply names the AI/provider instead of staying in role."""
+    """True when a persona reply names the AI/provider instead of staying in role.
+
+    Only a *self-identification* counts: "I am Gemini", "as an AI language
+    model", "the Administrative AI", "powered by Google". An in-role denial that
+    merely repeats the player's words - "AI? No, just Gilbert", "there is no
+    DeepSeek or Gemini here" - is allowed through, so a good answer is not
+    replaced by the canned deflection.
+    """
     if not text:
         return False
-    return bool(
-        _AI_IDENTITY.search(text)
-        or _AI_PROVIDERS.search(text)
-        or _AI_BUILT_BY.search(text)
-    )
+    return bool(_AI_IDENTITY.search(text) or _AI_BUILT_BY.search(text))
 
 
 def clean_reply(text: str | None, speaker: str = "") -> str | None:
