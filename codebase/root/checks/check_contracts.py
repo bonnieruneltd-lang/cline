@@ -501,7 +501,10 @@ async def main():
     flow_ai = CapturingAI()
     cog.ai = flow_ai
     cog.bot = SimpleNamespace(
-        db=db, logger=SimpleNamespace(exception=lambda *a, **k: None)
+        db=db,
+        logger=SimpleNamespace(
+            exception=lambda *a, **k: None, warning=lambda *a, **k: None
+        ),
     )
     request_guild = FakeRequestGuild()
     request = FakeRequestInteraction(request_guild, 55)
@@ -532,6 +535,11 @@ async def main():
           and f"Case ID: {crown_case['case_id']}" in flow_ai.messages[0]["content"])
     check("the opening turn calls it a proposal",
           "has proposed:" in flow_ai.messages[-1]["content"])
+    opening_turn = flow_ai.messages[-1]["content"]
+    check("the opening turn speaks as Albert instead of calling the requester Albert",
+          "Speaking as Albert, address the requester directly" in opening_turn
+          and "directly as Albert" not in opening_turn,
+          opening_turn)
     check("a Crown request does not enrol the nation",
           (await db.get_faction_member(g5, "nation", frontier)) is None)
 
@@ -569,6 +577,52 @@ async def main():
     check("Gilbert is told membership is not required",
           "Membership is never required" in union_system)
     check("the Union reply was posted", "let's have a look" in (union_channel.sent[-1] or ""))
+
+    # --- a character break never reaches the negotiation ------------------
+    # The live 2026-11-11 case got "I am Gemini (specifically Gemini 3.6 Flash),
+    # built by Google!" and then a meta apology. A break is retried once with a
+    # stay-in-character reminder; an unrepentant second break is replaced by the
+    # persona's own deflection.
+    class BreakingAI:
+        def __init__(self, replies):
+            self.replies = list(replies)
+            self.calls = []
+
+        async def complete(self, messages):
+            self.calls.append(list(messages))
+            return self.replies.pop(0) if self.replies else ""
+
+    breaker = BreakingAI([
+        "I am Gemini (specifically Gemini 3.6 Flash), built by Google!",
+        "Right then, let's get back to the bridge.",
+    ])
+    cog.ai = breaker
+    await cog._agent_reply(
+        await db.get_contract(cid), union_channel, user_text="which ai are you?"
+    )
+    check("a character break is retried once", len(breaker.calls) == 2, len(breaker.calls))
+    check("the retry carries the stay-in-character reminder",
+          any("STAY IN CHARACTER" in m["content"] for m in breaker.calls[1]))
+    check("the in-role retry is posted",
+          union_channel.sent[-1] == "Right then, let's get back to the bridge.",
+          union_channel.sent[-1])
+
+    stubborn = BreakingAI([
+        "I am Gemini, built by Google!",
+        "As an AI language model I cannot say.",
+    ])
+    cog.ai = stubborn
+    await cog._agent_reply(
+        await db.get_contract(cid), union_channel, user_text="still which ai?"
+    )
+    check("a repeated break never reaches the channel",
+          "Gemini" not in (union_channel.sent[-1] or "")
+          and "language model" not in (union_channel.sent[-1] or ""),
+          union_channel.sent[-1])
+    check("a repeated break posts the persona deflection",
+          "not the Union's ledger" in (union_channel.sent[-1] or ""),
+          union_channel.sent[-1])
+    cog.ai = ai
 
     # --- helpers can join a negotiation, and talks run side by side ---------
     # A negotiation is a private thread: only the requester and the Union Admins

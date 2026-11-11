@@ -6,7 +6,10 @@
 > its own key and `DAILY_GUIDE_TIMEOUT=600` (the pro tier took 206 s for 12k chars
 > and kept hitting the 240 s persona timeout — a guide that says
 > `_Generated … without the AI model._` timed out, the key is fine); the Cline
-> pass key is the backup for either (`CHATBOT_FALLBACK_*`). **Also uploaded
+> pass key is the backup for either (`CHATBOT_FALLBACK_*`). Persona replies are
+> now checked with `looks_out_of_character()`: one in-character retry, then a
+> `CHARACTER_DEFLECTION` instead of a leaked AI/model/provider name; both prompts
+> say only the record's status is real and only commands change it. **Also uploaded
 > 2026-11-10 (stamp `20261110-164655`, 11 files), restart pending:** `/casino withdraw` reserves the worst-case payout of open
 > blackjack/poker hands and `/casino balance` shows the held line; account names
 > are unique ignoring case; name/leaderboard indexes, a boot `PRAGMA quick_check`

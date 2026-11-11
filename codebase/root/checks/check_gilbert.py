@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
-from gilbert.ai import GilbertAI, clean_reply, provider_hint, reply_text  # noqa: E402
+from gilbert.ai import (  # noqa: E402
+    GilbertAI, clean_reply, looks_out_of_character, provider_hint, reply_text,
+)
 from gilbert import lookup, memory  # noqa: E402
 from gilbert.prompt import (  # noqa: E402
     GILBERT_SYSTEM_PROMPT,
@@ -136,12 +138,21 @@ check("Gilbert is told 1 credit is the floor",
       "1 credit is the floor" in GILBERT_SYSTEM_PROMPT)
 check("Gilbert knows the Crown CR case prefix",
       "CR-[NATION OR KINGDOM]-[ID]" in GILBERT_SYSTEM_PROMPT)
+gilbert_flat = " ".join(GILBERT_SYSTEM_PROMPT.split())
+check("Gilbert is told never to name a model or provider",
+      "no model, provider or version" in gilbert_flat, gilbert_flat[:80])
+check("Gilbert is told only commands change a case status",
+      "status is the only status" in gilbert_flat)
 check("Albert is asked to be warm", "warm" in albert_prompt.ALBERT_SYSTEM_PROMPT.lower())
 albert_flat = " ".join(albert_prompt.ALBERT_SYSTEM_PROMPT.split())
 check("Albert's rules open contracts to non-members",
       "regardless of faction or membership" in albert_flat)
 check("Albert's rules fund from the Crown treasury",
       "Crown buys supplies" in albert_flat)
+check("Albert is told never to name a model or provider",
+      "Never name an AI, model, provider" in albert_flat)
+check("Albert is told only the record's status is real",
+      "status in CURRENT RECORD is the only status" in albert_flat)
 
 albert_context = albert_prompt.contract_context(
     case_id="CR-TEST-001",
@@ -462,6 +473,32 @@ check("a case ID keeps its colon",
 check("blank runs are squeezed", clean_reply("a\n\n\n\nb") == "a\n\nb")
 check("an empty reply is None", clean_reply("   ") is None and clean_reply(None) is None)
 check("a normal reply is untouched", clean_reply("Right then.") == "Right then.")
+
+# --- character guard --------------------------------------------------------
+# The live 2026-11-11 negotiation got "I am Gemini (specifically Gemini 3.6
+# Flash), built by Google!" and then a meta apology. The persona rules forbid
+# that; these checks pin the detector that lets the caller retry once and fall
+# back to an in-character deflection instead of posting the machinery.
+check("an AI self-identification is caught",
+      looks_out_of_character(
+          "I am Gemini (specifically Gemini 3.6 Flash), built by Google!"
+      ))
+check("a language-model disclaimer is caught",
+      looks_out_of_character("As an AI language model, I cannot discuss that."))
+check("an administrative-AI claim is caught",
+      looks_out_of_character("The UN Secretariat's Administrative AI remains online."))
+check("a provider name alone is caught",
+      looks_out_of_character("DeepSeek wrote that reply."))
+check("an ordinary in-role reply passes",
+      not looks_out_of_character("Right then, let's get this ticking over."))
+check("an in-role denial of the question passes",
+      not looks_out_of_character(
+          "AI? Goodness me, no — just old Gilbert here with a cup of tea."
+      ))
+check("a case ID does not trip the guard",
+      not looks_out_of_character("Case UN-COMMUN-002 remains open at the Union."))
+check("an empty reply is not a character break",
+      not looks_out_of_character(None) and not looks_out_of_character(""))
 
 # The retry ladder is jittered, so twenty negotiations do not retry in lockstep.
 delays = [__import__("gilbert.ai", fromlist=["_retry_delay"])._retry_delay(None, 0) for _ in range(25)]

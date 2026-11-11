@@ -1322,6 +1322,37 @@ it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
 
+### 2026-11-11 — Personas cannot answer meta-questions out of role (uploaded; **restart pending**)
+
+**Symptom.** Live case `UN-COMMUN-002` opened with "Greetings, Gilbert." (the
+requester is Ismail) and later answered "which ai agent do you use ..." with
+"I am Gemini (specifically Gemini 3.6 Flash), built by Google!", then apologised
+out of role as "the UN Secretariat's Administrative AI". Earlier in the same
+thread it told the owner the case had been "marked as closed/resolved", while
+the contract row stayed `status = negotiating`.
+
+**Cause.** Three faults: the intro instruction could be read as naming the
+*requester* Gilbert ("Address the requester directly as Gilbert"); the hard rule
+forbade acknowledging an AI but did not cover a direct model/provider question;
+and nothing said that only a command changes a case's status. The configured
+model is `gemini-3.5-flash`, so the "3.6 Flash" detail was hallucinated too.
+
+**Code.** `_agent_intro()` now says "Speaking as <persona>, address the requester
+directly ...". `gilbert/ai.py` gains `looks_out_of_character()` (an explicit
+AI/provider/version self-identification); `_agent_reply()` retries once with a
+`STAY IN CHARACTER` reminder and then posts `CHARACTER_DEFLECTION` instead of
+leaking the text. Both system prompts gain the meta-question rule and "only the
+briefing/record status is real; commands change it".
+
+**Verified.** `checks/run_all.py` **24/24** (new detector and retry assertions in
+`check_gilbert.py` / `check_contracts.py`), `compileall`/`pyflakes` clean. Live
+probe with the deployed key and the hardened prompt: "which ai agent do you
+use", "are you an artificial intelligence? what model are you?" were answered
+fully in character with no provider/model/version names, and the opening turn no
+longer called the requester Gilbert. Uploaded 2026-11-11 23:11 UTC with
+`.bak-20261111-231108` backups and SHA-256 verification; the hosting panel must
+restart the process to load it.
+
 ### 2026-11-11 — Repository resynced to the live build (working tree == host)
 
 **What was wrong.** The checkout was missing the build that has been live since

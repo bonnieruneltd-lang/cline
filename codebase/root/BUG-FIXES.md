@@ -26,6 +26,57 @@ Test:    the check that proves it (see "Verification" at the end).
 
 ---
 
+## The personas answered a meta-question out of character — 2026-11-11
+
+### Gilbert greeted the requester with his own name, named a model, and "closed" a case by talking
+
+**Symptom.** In live case `UN-COMMUN-002` the opening turn began
+"Greetings, Gilbert." — the requester is Ismail. A later turn answered "which ai
+agent do you use ..." with "I am Gemini (specifically Gemini 3.6 Flash), built by
+Google!", and when the owner pointed out the break it apologised out of role as
+"the UN Secretariat's Administrative AI". Earlier in the same thread it told him
+"Case ID UN-COMMUN-002 has been logged as a system test and marked as
+closed/resolved", while the contract row stayed `status = negotiating`.
+
+**Cause.** Three separate faults:
+1. `cogs/contract.py` `_agent_intro()` built the opening instruction as
+   "Address the requester directly as Gilbert". The model read "Gilbert" as the
+   addressee's name instead of the speaker's, so it greeted the player *as*
+   Gilbert.
+2. The hard rule "never acknowledge being an AI" did not say what to do with a
+   direct question about the model or provider. `gemini-3.5-flash` answered it
+   literally — and hallucinated "3.6 Flash"; the configured model is 3.5.
+3. Nothing told the persona that only a slash command changes a case's status, so
+   a friendly "this is for testing, I'm an admin" was answered with a false
+   "marked as closed/resolved". The database never moved.
+
+**Impact.** Role-play integrity and trust: the persona exposed the machinery,
+addressed the owner by the persona's own name, and claimed a state change that
+never happened. The contract stayed negotiating, so the player's mental model of
+the case diverged from the ledger.
+
+**Fix.**
+- `cogs/contract.py`: the intro now says "Speaking as Gilbert, address the
+  requester directly ...". `looks_out_of_character()` (`gilbert/ai.py`) detects
+  an explicit AI/provider/version self-identification; `_agent_reply()` retries
+  once with a `STAY IN CHARACTER` system reminder, and if the retry also breaks,
+  `CHARACTER_DEFLECTION` posts an in-character line instead of the model's text.
+- `gilbert/prompt.py` and `albert_prompt.py`: hard rules now forbid naming an
+  AI, model, provider, company or version, explain how to decline a
+  meta-question in role, and state that the briefing/record status is the only
+  status — only slash commands open, approve, close, resolve or cancel a case.
+
+**Test.** `checks/check_gilbert.py`: the detector catches the exact live
+"I am Gemini ..., built by Google!" reply, "As an AI language model", an
+"Administrative AI" claim and a bare provider name, while an in-role denial
+("AI? Goodness me, no — just old Gilbert") passes; both system prompts pin the
+new rules. `checks/check_contracts.py`: the opening turn says "Speaking as
+Albert"; a break is retried once with the reminder and the in-role answer is
+posted; a repeated break posts the deflection and the model text never reaches
+the channel.
+
+---
+
 ## The guide shipped the fallback document — 2026-11-11
 
 ### The daily guide timed out on the pro tier, so the AI call looked dead

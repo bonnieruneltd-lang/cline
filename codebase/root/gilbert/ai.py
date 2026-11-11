@@ -384,6 +384,45 @@ _ECHOED_LABEL = re.compile(
 )
 
 
+# A persona must never reveal the machinery behind it. The hard prompt rule
+# makes this rare, but a model can still answer a direct meta-question out of
+# role (the live 2026-11-11 turn: "I am Gemini (specifically Gemini 3.6 Flash),
+# built by Google!"). These patterns catch the explicit breaks - naming itself
+# an AI/language model, or naming a provider, model or version - so the caller
+# can retry once and, if it happens again, post an in-character deflection
+# instead of leaking it into the negotiation.
+_AI_IDENTITY = re.compile(
+    r"(?:\bA\.I\.|"
+    r"\b(?:an?|the)\s+(?:[A-Za-z'’\-]+\s+){0,3}"
+    r"(?:AI|artificial intelligence|language model|LLM|chatbot)\b|"
+    r"\bI\s*(?:'m|’m|am)\s+(?:an?\s+)?"
+    r"(?:AI|bot|program|machine|language model|LLM|chatbot)\b|"
+    r"\bas\s+(?:an?\s+)?(?:AI|language model|LLM|chatbot)\b)",
+    re.IGNORECASE,
+)
+_AI_PROVIDERS = re.compile(
+    r"\b(?:Gemini|DeepSeek|OpenAI|ChatGPT|GPT(?:-?[0-9][0-9.]*)?|Claude|"
+    r"Anthropic|LLaMA|Mistral)\b",
+    re.IGNORECASE,
+)
+_AI_BUILT_BY = re.compile(
+    r"\b(?:built|made|created|trained|developed)\s+by\s+"
+    r"(?:Google|OpenAI|Anthropic|DeepSeek|Meta|Microsoft|Mistral)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_out_of_character(text: str | None) -> bool:
+    """True when a persona reply names the AI/provider instead of staying in role."""
+    if not text:
+        return False
+    return bool(
+        _AI_IDENTITY.search(text)
+        or _AI_PROVIDERS.search(text)
+        or _AI_BUILT_BY.search(text)
+    )
+
+
 def clean_reply(text: str | None, speaker: str = "") -> str | None:
     """Tidy a model reply before it is posted as the persona.
 

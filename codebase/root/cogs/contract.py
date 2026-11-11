@@ -39,7 +39,7 @@ from checks import admin_only
 from contract_limits import budget_allowed, limit_explanation, max_budget_for_funds
 from database import InsufficientFunds
 from gilbert import memory
-from gilbert.ai import GilbertAI, clean_reply
+from gilbert.ai import GilbertAI, clean_reply, looks_out_of_character
 from gilbert.lookup import lookup_for, platform_block
 from gilbert.prompt import GILBERT_SYSTEM_PROMPT, classify_tier, contract_context
 from utils import account_autocomplete, account_emoji, money, parse_account
@@ -52,6 +52,22 @@ STATUS_LABELS = {
     "rejected": "🔴 Rejected",
     "cancelled": "⚪ Cancelled",
     "closed": "🔒 Closed",
+}
+
+# A model can answer a direct meta-question out of role even under the hard
+# prompt rule (the live 2026-11-11 turn, "I am Gemini ..., built by Google!").
+# ``_agent_reply`` retries once; if the second reply still names the machinery,
+# this in-character line is posted instead of leaking it into the negotiation.
+CHARACTER_DEFLECTION = {
+    "Gilbert": (
+        "Right then — that's a question for the realm's keepers, not the Union's "
+        "ledger, and I'd rather not guess at matters outside this desk. Shall we "
+        "get back to your proposal?"
+    ),
+    "Albert": (
+        "That lies outside the Crown's ledger, and I will not speculate on it. "
+        "Let us return to the matter before us."
+    ),
 }
 
 
@@ -757,6 +773,38 @@ class Contract(commands.Cog):
         # strip the echoed label (and any run of blank lines) before posting.
         reply = clean_reply(reply, self._agent_name(contract))
 
+        # A persona that names its model/provider stops being that person. The
+        # hard prompt rule makes this rare, but it is not impossible. Give the
+        # model one more attempt with an explicit reminder; if it still breaks,
+        # post the in-character deflection rather than the machinery.
+        if looks_out_of_character(reply):
+            name = self._agent_name(contract)
+            self.bot.logger.warning(
+                "%s stepped out of character for %s; retrying once",
+                name,
+                contract["case_id"],
+            )
+            reminder = {
+                "role": "system",
+                "content": (
+                    f"STAY IN CHARACTER. You are {name}, a person — never name "
+                    "or discuss an AI, model, provider or version, and never "
+                    "confirm that you are software. Answer in role or decline "
+                    "the question in role."
+                ),
+            }
+            try:
+                async with channel.typing():
+                    reply = await self.ai.complete(messages + [reminder])
+            except Exception:  # pragma: no cover - defensive
+                self.bot.logger.exception(
+                    "%s retry failed for %s", name, contract["case_id"]
+                )
+                reply = None
+            reply = clean_reply(reply, name)
+            if not reply or looks_out_of_character(reply):
+                reply = CHARACTER_DEFLECTION[name]
+
         if not reply:
             if faction == faction_rules.CROWN:
                 reply = (
@@ -805,9 +853,10 @@ class Contract(commands.Cog):
             user_text=(
                 f"Open the negotiation for {contract['case_id']}. The {owner_label} of "
                 f"{contract['nation_name']} has proposed: {contract['project']}. "
-                f"Budget requested: {contract['budget']:,} credits. Address the "
-                f"requester directly as {agent}, thank them for bringing it forward, "
-                f"state the Case ID, classify the funding tier, and {ask}."
+                f"Budget requested: {contract['budget']:,} credits. Speaking as "
+                f"{agent}, address the requester directly and thank them for "
+                f"bringing it forward, state the Case ID, classify the funding "
+                f"tier, and {ask}."
             ),
         )
 
