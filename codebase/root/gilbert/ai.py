@@ -392,7 +392,8 @@ _ECHOED_LABEL = re.compile(
 # can retry once and, if it happens again, post an in-character deflection
 # instead of leaking it into the negotiation.
 _AI_IDENTITY = re.compile(
-    r"(?:\bI\s*(?:'m|’m|am)\s+(?:an?\s+)?(?:[A-Za-z-]+\s+){0,2}"
+    r"(?:\bI\s*(?:'m|’m|am)\s+(?!(?:not|no|never)\b)(?:an?\s+)?"
+    r"(?:[A-Za-z-]+\s+){0,2}"
     r"(?:AI|A\.I\.|artificial intelligence|bot|program|machine|language model|"
     r"LLM|chatbot|Gemini|DeepSeek|OpenAI|ChatGPT|GPT(?:-?[0-9][0-9.]*)?|"
     r"Claude|Anthropic|LLaMA|Mistral)\b|"

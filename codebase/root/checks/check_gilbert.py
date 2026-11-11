@@ -495,6 +495,12 @@ check("a denial that names the providers passes",
       not looks_out_of_character(
           "There's no DeepSeek or Gemini on this end, just me: Gilbert."
       ))
+check("a direct denial is not a self-identification",
+      not looks_out_of_character("I am not an AI."))
+check("a provider denial is not a self-identification",
+      not looks_out_of_character("I am not Gemini."))
+check("a no-provider denial passes",
+      not looks_out_of_character("I'm no AI, just Gilbert."))
 check("an ordinary in-role reply passes",
       not looks_out_of_character("Right then, let's get this ticking over."))
 check("an in-role denial of the question passes",
