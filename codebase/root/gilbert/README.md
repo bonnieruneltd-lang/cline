@@ -87,20 +87,36 @@ fallback when the matching `CHATBOT_*` value is blank.
 | `TEMPERATURE` | `AI_TEMPERATURE` | `0.6` | Sampling temperature |
 | `MAX_TOKENS` | `AI_MAX_TOKENS` | `900` | Reply cap — **must cover reasoning too** |
 
+A backup provider is configured with `CHATBOT_FALLBACK_API_URL`,
+`CHATBOT_FALLBACK_API_KEY` and `CHATBOT_FALLBACK_MODEL`. When the primary gives
+no reply — 401/403 (key revoked), 402 (empty balance), 429 (rate limited), 5xx,
+timeout, or the failure breaker is open — the same call is retried once on the
+backup. Without it, a free key running dry posts the canned persona line for the
+rest of the day while a working key sits unused. `API_URL` / `API_KEY` /
+`fallback_model` constructor overrides let the daily guide use its own provider
+(`DAILY_GUIDE_API_URL`, `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_FALLBACK_MODEL`)
+without touching the personas.
+
 Any OpenAI-compatible endpoint works: OpenAI, Azure OpenAI, OpenRouter, Ollama,
-LM Studio, vLLM, or the Cline gateway (`https://api.cline.bot/api/v1`).
+LM Studio, vLLM, Google AI Studio
+(`https://generativelanguage.googleapis.com/v1beta/openai`) or the Cline
+gateway (`https://api.cline.bot/api/v1`).
 `GilbertAI()` also takes `model=` / `temperature=` / `max_tokens=` / `timeout=`
 overrides, which is how `DailySync` runs the guide on a different model from the
 same key (`DAILY_GUIDE_MODEL`, `DAILY_GUIDE_TEMPERATURE`,
 `DAILY_GUIDE_MAX_TOKENS`).
 
-**Live choice (2026-11-06):** personas on
-`cline-pass/deepseek-v4.1-flash-1017` (0.75, 16,000, 240 s) because a player is
-watching and it answers in ~8 s; the guide on `cline-pass/deepseek-v4-pro`
-(0.25, 16,000) because it runs once a day and produced the most complete
-document. Measured alternatives: `muse-spark-1.3-contributor` (14 s, best
-alternative voice), `kimi-k3.1-pro` (31 s, crispest), `deepseek-v4-pro` (27 s).
-`cline-pass/deepseek-v4.1-pro` does not exist — the alias is
+**Live choice (2026-11-11):** personas on Google AI Studio
+`gemini-3.5-flash` (0.75, 16,000, 240 s) — a measured 5.8–8.0 s per negotiation
+reply; the guide on DeepSeek `deepseek-v4-pro` (0.25, 16,000) with its own key
+(`DAILY_GUIDE_API_KEY`). The backup for both is the Cline pass key: the personas
+fall back to `cline-pass/deepseek-v4.1-flash-1017`, the guide to
+`cline-pass/deepseek-v4-pro` (`DAILY_GUIDE_FALLBACK_MODEL`). Verified live: a
+deliberately invalid Google key answered through the Cline fallback in 0.8 s and
+an invalid DeepSeek key through the Cline pro tier in 2.5 s. The earlier live
+choice (2026-11-06) was `cline-pass/deepseek-v4.1-flash-1017` for the personas
+(0.75, 16,000, 240 s) and `cline-pass/deepseek-v4-pro` for the guide (0.25,
+16,000); `cline-pass/deepseek-v4.1-pro` does not exist — the alias is
 `cline-pass/deepseek-v4-pro`.
 
 ### Two traps worth knowing
@@ -110,7 +126,8 @@ alternative voice), `kimi-k3.1-pro` (31 s, crispest), `deepseek-v4-pro` (27 s).
   accepts both, plus list-form `content` and the legacy `choices[0]["text"]`.
   Read a reply through it; never index `payload["choices"]` directly, or every
   reply from that provider parses as empty and the persona silently falls back.
-* **Reasoning burns the budget.** The cline-pass models are reasoning models:
+* **Reasoning burns the budget.** The cline-pass and Gemini 3.x models are
+  reasoning models:
   the answer arrives after the thinking and `max_tokens` pays for both. At
   2,000–4,000 tokens several returned `HTTP 500 {"error":"empty response
   content"}` with **no text at all**. Keep 16,000. `provider_hint()` turns that

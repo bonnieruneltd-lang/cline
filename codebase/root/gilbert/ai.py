@@ -13,6 +13,16 @@ client, so the settings are the **chat-bot** config: ``CHATBOT_API_KEY``,
 ``CHATBOT_API_URL``, ``CHATBOT_MODEL``, ``CHATBOT_TIMEOUT``,
 ``CHATBOT_TEMPERATURE`` and ``CHATBOT_MAX_TOKENS``. The old ``AI_*`` names are
 still read as a fallback so an existing ``.env`` keeps working during migration.
+
+Backup provider
+---------------
+A second endpoint can be configured with ``CHATBOT_FALLBACK_API_URL``,
+``CHATBOT_FALLBACK_API_KEY`` and ``CHATBOT_FALLBACK_MODEL``. Whenever the
+primary endpoint produces no reply - a revoked key (401/403), an empty balance
+(402), a rate limit (429), a 5xx, a timeout, or the failure breaker being open -
+the same call is retried once against the fallback. That is what keeps the
+personas answering when a free-tier key runs dry, instead of silently posting
+the canned fallback line for the rest of the day.
 """
 from __future__ import annotations
 
@@ -22,6 +32,7 @@ import os
 import random
 import re
 import time
+from typing import NamedTuple
 
 import aiohttp
 
@@ -217,6 +228,9 @@ def _log_usage(payload) -> None:
 
 
 _DEFAULT_MODEL = "deepseek-chat"
+# Only used when neither ``CHATBOT_API_URL`` nor ``AI_API_URL`` is set. The live
+# deployment always sets its provider explicitly.
+DEFAULT_BASE_URL = "https://api.deepseek.com"
 # Legacy deployments used "deepseek-flash". The current endpoint accepts it, but
 # deepseek-chat is the portable default for DeepSeek-compatible services.
 _DEEPSEEK_MODEL_ALIASES = {"deepseek-flash": _DEFAULT_MODEL, "deepseek": _DEFAULT_MODEL}
@@ -250,6 +264,52 @@ def _cfg(name: str, default: str = "") -> str:
     return default
 
 
+class _Provider(NamedTuple):
+    """One OpenAI-compatible endpoint: where to POST, with which key/model."""
+
+    base_url: str
+    api_key: str
+    model: str
+
+
+def _normalise_url(url: str) -> str:
+    """``https://host/v1/`` and ``.../chat/completions`` both become ``.../v1``."""
+    base = (url or "").strip().rstrip("/")
+    if base.endswith("/chat/completions"):
+        base = base[: -len("/chat/completions")].rstrip("/")
+    return base
+
+
+def _apply_deepseek_alias(base_url: str, model: str) -> str:
+    """Map the retired ``deepseek-flash`` name, but only on the DeepSeek host.
+
+    Other gateways may legitimately serve their own ``deepseek-flash``; only
+    ``api.deepseek.com`` renamed it to ``deepseek-chat``.
+    """
+    if "api.deepseek.com" in base_url:
+        alias = _DEEPSEEK_MODEL_ALIASES.get(model.lower())
+        if alias and alias != model:
+            logger.warning(
+                "AI_MODEL=%s is a legacy model name; using %s instead.", model, alias
+            )
+            return alias
+    return model
+
+
+def _fallback_provider(primary_model: str) -> _Provider | None:
+    """The backup endpoint from ``CHATBOT_FALLBACK_*``, or ``None``.
+
+    Both a URL and a key are required; an empty model means "same model as the
+    primary", which is only useful when the two share a provider.
+    """
+    base_url = _normalise_url(_cfg("FALLBACK_API_URL", ""))
+    api_key = _cfg("FALLBACK_API_KEY", "")
+    if not base_url or not api_key:
+        return None
+    model = (_cfg("FALLBACK_MODEL", "") or primary_model).strip()
+    return _Provider(base_url, api_key, _apply_deepseek_alias(base_url, model))
+
+
 def provider_hint(status: int, body: str) -> str:
     """A one-line diagnosis for the common provider failures.
 
@@ -260,7 +320,7 @@ def provider_hint(status: int, body: str) -> str:
     """
     text = (body or "").lower()
     if status in (401, 403):
-        return "check CHATBOT_API_KEY"
+        return "check CHATBOT_API_KEY (or CHATBOT_FALLBACK_API_KEY)"
     if status == 402 or "insufficient_credits" in text:
         return "the provider account is out of credit"
     if status == 404 or "model not found" in text:
@@ -350,27 +410,26 @@ class GilbertAI:
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout: float | None = None,
+        api_url: str | None = None,
+        api_key: str | None = None,
+        fallback_model: str | None = None,
     ) -> None:
         """One chat-completions client.
 
         The keyword overrides let a caller (the daily guide) run on a different
         model, temperature and token budget than the Albert/Gilbert personas
         while sharing every other setting. ``None`` means "read the env".
+
+        ``api_url`` / ``api_key`` let that caller also use its own provider (the
+        guide runs on a DeepSeek key while the personas run on Google AI Studio),
+        and ``fallback_model`` overrides ``CHATBOT_FALLBACK_MODEL`` for that
+        caller alone - the guide falls back to the big pro tier, the personas to
+        the fast one.
         """
-        self.base_url = _cfg("API_URL", "https://api.deepseek.com").rstrip("/")
-        if self.base_url.endswith("/chat/completions"):
-            self.base_url = self.base_url[: -len("/chat/completions")]
-        self.api_key = _cfg("API_KEY", "")
+        self.base_url = _normalise_url(api_url or _cfg("API_URL", DEFAULT_BASE_URL))
+        self.api_key = (api_key if api_key is not None else _cfg("API_KEY", "")).strip()
         self.model = (model or _cfg("MODEL", _DEFAULT_MODEL) or _DEFAULT_MODEL).strip()
-        if "api.deepseek.com" in self.base_url:
-            alias = _DEEPSEEK_MODEL_ALIASES.get(self.model.lower())
-            if alias and alias != self.model:
-                logger.warning(
-                    "AI_MODEL=%s is a legacy model name; using %s instead.",
-                    self.model,
-                    alias,
-                )
-                self.model = alias
+        self.model = _apply_deepseek_alias(self.base_url, self.model)
         try:
             self.timeout = float(timeout) if timeout is not None else float(_cfg("TIMEOUT", "60"))
         except ValueError:
@@ -388,37 +447,88 @@ class GilbertAI:
         except ValueError:
             self.max_tokens = 900
 
+        fallback = _fallback_provider(self.model)
+        if fallback is not None and (fallback_model or "").strip():
+            fallback = fallback._replace(model=(fallback_model or "").strip())
+        if fallback is not None and fallback == _Provider(
+            self.base_url, self.api_key, self.model
+        ):
+            # Same endpoint, key and model: retrying it once more buys nothing.
+            fallback = None
+        self.fallback = fallback
+
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key) or self.fallback is not None
 
     async def complete(self, messages: list[dict]) -> str | None:
-        """Return Gilbert's reply, or ``None`` if the model is unavailable."""
-        if not self.enabled:
+        """Return the reply, or ``None`` if neither provider could answer.
+
+        The primary provider is tried first. If it yields nothing - a dead key,
+        an empty balance, a rate limit, an outage or an open breaker - the
+        configured fallback gets one attempt, because posting the canned
+        persona line while a working key sits unused is the bug this covers.
+        """
+        if self.api_key:
+            reply = await self._complete_with(
+                self.base_url, self.api_key, self.model, messages
+            )
+            if reply is not None or self.fallback is None:
+                return reply
+            logger.warning(
+                "Primary AI endpoint %s (%s) gave no reply; retrying on the "
+                "fallback %s (%s)",
+                self.base_url,
+                self.model,
+                self.fallback.base_url,
+                self.fallback.model,
+            )
+        elif self.fallback is not None:
+            logger.warning(
+                "CHATBOT_API_KEY is not set; using the fallback endpoint %s (%s)",
+                self.fallback.base_url,
+                self.fallback.model,
+            )
+        else:
             logger.warning("AI_API_KEY is not set; Gilbert cannot generate a reply.")
             return None
 
+        return await self._complete_with(
+            self.fallback.base_url,
+            self.fallback.api_key,
+            self.fallback.model,
+            messages,
+        )
+
+    async def _complete_with(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        messages: list[dict],
+    ) -> str | None:
+        """One provider's retry ladder. ``None`` means "this provider is out"."""
         payload = {
-            "model": self.model,
+            "model": model,
             "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        url = f"{self.base_url}/chat/completions"
+        url = f"{base_url}/chat/completions"
         attempts = _max_attempts()
         # One overall budget: a retry only happens when the first try failed
         # quickly (429/5xx). A request that burns the whole timeout is not
         # repeated, which keeps the daily guide from doubling a long call.
         deadline = time.monotonic() + self.timeout
-        breaker = _breaker_key(self.base_url, self.model)
+        breaker = _breaker_key(base_url, model)
         if breaker_open(breaker):
             logger.warning(
                 "AI endpoint %s is paused after repeated failures; skipping this call",
-                self.base_url,
+                base_url,
             )
             return None
 
@@ -440,7 +550,7 @@ class GilbertAI:
                             if content is None:
                                 logger.error(
                                     "Gilbert AI returned no message text (model=%s, keys=%s)",
-                                    self.model,
+                                    model,
                                     sorted(data)[:6]
                                     if isinstance(data, dict)
                                     else type(data).__name__,
@@ -455,7 +565,7 @@ class GilbertAI:
                         logger.error(
                             "Gilbert AI returned HTTP %s (model=%s, url=%s): %s%s",
                             resp.status,
-                            self.model,
+                            model,
                             url,
                             body,
                             f" [hint: {hint}]" if hint else "",

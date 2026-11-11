@@ -206,6 +206,9 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `CHATBOT_MAX_TOKENS` | Chat-bot reply token limit (legacy `AI_MAX_TOKENS`) |
 | `CHATBOT_MAX_CONCURRENCY` | Simultaneous chat-bot calls the bot will make (default 8, clamped 1-64) |
 | `CHATBOT_RETRIES` | Retries for a 429/5xx chat-bot reply (default 2, clamped 0-4) |
+| `CHATBOT_FALLBACK_API_URL` | Backup chat-bot base URL used when the primary gives no reply |
+| `CHATBOT_FALLBACK_API_KEY` | Backup chat-bot key (the Cline pass key on the live deployment) |
+| `CHATBOT_FALLBACK_MODEL` | Backup model; for the personas `cline-pass/deepseek-v4.1-flash-1017` |
 | `API_TOKEN` | Shared bearer token for the Forge mod |
 | `API_HOST` | HTTP bind address |
 | `API_PORT` | HTTP port |
@@ -236,6 +239,9 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `DAILY_GUIDE_MAX_CHARS` | Max guide length returned (default 24000) |
 | `DAILY_GUIDE_LANGUAGE` | Language the guide is written in (default English) |
 | `DAILY_GUIDE_MODEL` | Model for the guide alone (default: `CHATBOT_MODEL`) |
+| `DAILY_GUIDE_API_URL` | Base URL for the guide alone (default: `CHATBOT_API_URL`) |
+| `DAILY_GUIDE_API_KEY` | Key for the guide alone (default: `CHATBOT_API_KEY`) |
+| `DAILY_GUIDE_FALLBACK_MODEL` | Backup model for the guide only (default: `CHATBOT_FALLBACK_MODEL`) |
 | `DAILY_GUIDE_TEMPERATURE` | Guide temperature, clamped 0–1 (default 0.25) |
 | `DAILY_GUIDE_MAX_TOKENS` | Guide output token budget (default 12000) |
 | `TAVILY_API_KEY` | Enables live Minecraft lookups for Albert and Gilbert when set |
@@ -251,16 +257,19 @@ Both personas and the guide speak the same OpenAI-compatible protocol
 
 | Role | Live setting | Why |
 |---|---|---|
-| Gilbert + Albert | `CHATBOT_MODEL=cline-pass/deepseek-v4.1-flash-1017` via `https://api.cline.bot/api/v1`, 0.75, 16k, 240 s | A player watches "typing…", so latency wins: ~8 s and correct on the leverage cap, tranche and case ID |
-| Daily guide | `DAILY_GUIDE_MODEL=cline-pass/deepseek-v4-pro`, 0.25, 16k | Runs once a day at 06:00 UTC — 50 s is free, and it wrote the longest, most complete guide (23.8k chars, 0 of 114 commands missing) |
+| Gilbert + Albert | `CHATBOT_MODEL=gemini-3.5-flash` via Google AI Studio (`https://generativelanguage.googleapis.com/v1beta/openai`), 0.75, 16k, 240 s | A player watches "typing…", so latency wins: measured 5.8–8.0 s and correct on the leverage cap, tranche and case ID |
+| Daily guide | `DAILY_GUIDE_API_URL=https://api.deepseek.com` + its own `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-v4-pro`, 0.25, 16k | Runs once a day at 06:00 UTC — 4.4 s for a three-bullet sample, and a separate key means it can run dry without silencing the personas |
+| Backup (both) | `CHATBOT_FALLBACK_API_URL=https://api.cline.bot/api/v1`, the Cline pass key, `CHATBOT_FALLBACK_MODEL=cline-pass/deepseek-v4.1-flash-1017`, `DAILY_GUIDE_FALLBACK_MODEL=cline-pass/deepseek-v4-pro` | A revoked or empty primary key retries once here instead of posting the canned line; verified at 0.8 s and 2.5 s |
 
-`DAILY_GUIDE_MODEL` / `_TEMPERATURE` / `_MAX_TOKENS` are **overrides only**: the
-guide inherits `CHATBOT_API_URL` and `CHATBOT_API_KEY`, so there is one key for
-both jobs and blank values fall back to the persona settings.
+`DAILY_GUIDE_MODEL` / `_TEMPERATURE` / `_MAX_TOKENS` are **overrides only**, and
+`DAILY_GUIDE_API_URL` / `_API_KEY` optionally move the guide to its own provider.
+Blank guide values inherit the persona settings, so one shared key still works.
+`CHATBOT_FALLBACK_*` applies the Cline pass key as the backup for *either* key.
 
-**Reasoning models need a big `max_tokens`.** The cline-pass family thinks
-before it answers and the budget pays for both, so a small cap returns
-`HTTP 500 {"error":"empty response content"}` with *no text at all* — which the
+**Reasoning models need a big `max_tokens`.** The cline-pass and Gemini 3.x
+families think before they answer and the budget pays for both, so a small cap
+returns `HTTP 500 {"error":"empty response content"}` (or a Gemini
+`finish_reason=length` with no `content`) — with *no text at all* — which the
 handler then shows as "my line to the records has gone down". Keep 16,000.
 `gilbert/ai.py:provider_hint()` names this cause (and 401/402/404/429) in the log.
 
@@ -1311,6 +1320,103 @@ Newest first. Each entry records what changed, how it was verified and whether
 it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
+
+### 2026-11-11 — Personas on Google AI Studio, the guide on DeepSeek, Cline as the backup (uploaded; **restart pending**)
+
+**What changed.** All chat AIs (Gilbert + Albert, and `/poker`'s bot names) moved
+to Google AI Studio `gemini-3.5-flash` (0.75, 16k, 240 s) on a Google Studio key;
+the once-a-day summarising guide moved to DeepSeek `deepseek-v4-pro` (0.25, 16k)
+on its **own** `DAILY_GUIDE_API_KEY`. The Cline pass key and its two models are
+now the **backup for either key**, so a key that runs dry or is revoked no longer
+silences a persona or drops the guide to `fallback_guide()`.
+
+**Code.** `gilbert/ai.py` reads `CHATBOT_FALLBACK_API_URL` / `_API_KEY` /
+`_MODEL`; `GilbertAI.complete()` tries the primary and, on *any* failure (401,
+402, 429, 5xx, timeout, open breaker), retries the same call once on the backup.
+`GilbertAI()` gained `api_url=` / `api_key=` / `fallback_model=` overrides, and
+`DailySync` uses them from `DAILY_GUIDE_API_URL` / `_API_KEY` /
+`_FALLBACK_MODEL`, so the guide's provider and its backup model are independent
+of the personas'. An identical backup configuration is dropped rather than
+retried twice. `provider_hint(401)` now names both keys.
+
+**Verified.** `checks/run_all.py` **24/24**, `compileall`/`pyflakes` clean, and
+`checks/check_gilbert.py` / `check_daily_sync.py` pin the new routing with stubs
+(no network). Live through the real client: a persona reply from Gemini in 8.0 s,
+a guide snippet from DeepSeek in 4.4 s, an invalid Google key answered by the
+Cline flash fallback in 0.8 s, and an invalid DeepSeek key answered by the Cline
+pro fallback in 2.5 s.
+
+### 2026-11-10 — The house cannot be drained mid-hand, names are unique ignoring case, lookups are indexed (uploaded; **restart pending**)
+
+**The problems.** Three things a busy evening could hit:
+
+1. `/casino withdraw` only looked at the current house balance. With a blackjack
+   hand or a poker table in play the house still **owes the return** on those
+   stakes (3:2 on a natural, or the player's final stack up to every chip at the
+   table). An admin withdrawing "everything" left the house unable to settle —
+   and because a hand is closed *before* it is paid, the player's stake could be
+   destroyed. The startup refund of an interrupted hand debits the same balance,
+   so a restart hit it too.
+2. `nations` / `kingdoms` use a **case-sensitive** `UNIQUE (guild_id, name)`
+   while every lookup is `COLLATE NOCASE`. `Foo` and `foo` could therefore both
+   exist, and one of them was unreachable; two admins acting in the same instant
+   could produce that state on create *or* on rename.
+3. Every name lookup (`/nation show`, `/transfer`, autocomplete, "is this name
+   free?") scanned the table, because a BINARY unique index cannot serve a
+   `COLLATE NOCASE` comparison, and `/leaderboard` sorted in a temporary B-tree.
+
+**What changed (no economy rule changed, no command added — still 119 commands /
+17 cogs / 24 checks).**
+
+1. **Withdrawal keeps the hands' reserve.** New `Database.open_hand_stakes()`
+   sums the open stakes per game in one query; `casino.reserve_for_open_hands()`
+   prices the worst case with the same `blackjack.max_gross()` /
+   `poker.max_gross()` the deal-time cover check uses, and `casino.reserve_note()`
+   names the game holding the credits. `/casino withdraw` now reads the house,
+   the open hands and the debit **inside one transaction**, and refuses with
+   `House Reserve` (not the plain "Insufficient Funds") when the credits exist but
+   are owed to a hand. `/casino balance` shows a `Held for open hands` line
+   (`gambling_ui.casino_floor(house, reserved=…, reserved_note=…)`) so an admin
+   sees the reserve before typing an amount.
+2. **A name is unique ignoring case.** `Database._create_account()` inserts with
+   `... SELECT ... WHERE NOT EXISTS (... COLLATE NOCASE)` and raises the new
+   `NameTaken` instead of writing a second, unreachable row; `rename_account()`
+   runs the same clash test inside its transaction (a pure case change of its own
+   name is still allowed). `found_account()`, `/nation add`, `/kingdom add`,
+   `/nation rename` and `/kingdom rename` all catch it and answer `Name Taken`;
+   the approval view closes the petition as `failed` exactly as it already did
+   for `sqlite3.IntegrityError`. Legacy `Foo`/`foo` pairs are left untouched —
+   nothing is deleted — but a third can no longer appear.
+3. **Indexes, and a clean stop.** `idx_nations_name_nocase`,
+   `idx_kingdoms_name_nocase`, `idx_nations_balance`, `idx_kingdoms_balance`,
+   `idx_blackjack_guild` and `idx_poker_guild` are `CREATE INDEX IF NOT EXISTS`
+   entries in the schema, so the live database gains them at startup. Measured on
+   a throwaway database (20,000 nations + 20,000 kingdoms, 2,000 mixed-case
+   lookups): nation lookup **3.61 ms → 0.50 ms (7.3×)**, kingdom lookup
+   **3.67 ms → 0.47 ms (7.9×)**, `/leaderboard` top-25 **5.33 ms → 0.60 ms
+   (9.0×)**. At 5,000 rows the same paths are 2.7×/3.4×/4.9× faster.
+   `Database.close()` now ends with `PRAGMA wal_checkpoint(TRUNCATE)` and
+   `PRAGMA optimize` (best effort) so a clean stop leaves one file and current
+   planner stats, and `setup_hook()` logs `PRAGMA quick_check` plus the database
+   and WAL sizes at every boot.
+4. **The Forge mod sources are in the repository now.** The live host has held
+   the complete mod (`forge-mod/src/main/java/com/royalcourt/redeem/…`,
+   `build.gradle`, the Gradle wrapper and the built jar) since 2026-11-07, but
+   this checkout only ever had `forge-mod/README.md` — the mirror was incomplete
+   and the mod could not be reviewed or rebuilt from source. The 18 source and
+   build files are now mirrored (the `build/` output and the built jar stay
+   excluded by `forge-mod/.gitignore`).
+
+**Verification.** `python3 checks/run_all.py` → **24/24**, `compileall` and
+`pyflakes` clean, `checks/check_casino.py` and `checks/check_creation_race.py`
+grew the new cases (`open_hand_stakes`, reserve arithmetic, both refusal paths,
+conservation to the credit, case-variant create/rename/command races) and
+`checks/check_database.py` asserts the six indexes exist, that the planner
+actually uses them (`EXPLAIN QUERY PLAN`), and that `quick_check` answers `ok`.
+Every file was uploaded with a `.bak-YYYYMMDD-HHMMSS` backup and SHA-256
+verified, then pulled back into an empty directory and re-run there (see
+`AGENTS.md`, "Deploying"). The command surface is unchanged: 119 commands /
+17 cogs / 24 checks.
 
 ### 2026-11-10 — Persona memory: every turn kept, a bounded window sent (uploaded; **restart pending**)
 

@@ -1,4 +1,5 @@
 """Gilbert configuration and prompt checks. No network or Discord login."""
+import asyncio
 import os
 import sys
 from unittest.mock import patch
@@ -221,6 +222,100 @@ with patch.dict(os.environ, {
           guide.base_url == "https://api.cline.bot/api/v1", guide.base_url)
     check("a /v1 base URL is not rewritten for deepseek aliases",
           persona.model == "reflection/beam-1.0-501b-a23b")
+
+# --- backup provider -------------------------------------------------------
+# A free key that runs dry (401/402/429) must not silence a persona while a
+# valid backup key sits unused. The client tries the primary, then the backup.
+_PRIMARY = {
+    "CHATBOT_API_URL": "https://primary.test/v1",
+    "CHATBOT_API_KEY": "pk",
+    "CHATBOT_MODEL": "primary-model",
+    "AI_API_KEY": "",
+    "AI_API_URL": "",
+    "AI_MODEL": "",
+}
+with patch.dict(os.environ, {
+    **_PRIMARY,
+    "CHATBOT_FALLBACK_API_URL": "https://backup.test/v1/",
+    "CHATBOT_FALLBACK_API_KEY": "bk",
+    "CHATBOT_FALLBACK_MODEL": "backup-model",
+}, clear=False):
+    ai = GilbertAI()
+    check("backup URL is normalised", ai.fallback.base_url == "https://backup.test/v1", ai.fallback)
+    check("backup key is read", ai.fallback.api_key == "bk", ai.fallback)
+    check("backup model is read", ai.fallback.model == "backup-model", ai.fallback)
+    guide = GilbertAI(model="guide-model", fallback_model="backup-pro")
+    check("a caller picks its own backup model", guide.fallback.model == "backup-pro", guide.fallback)
+    check("...and keeps its own primary model", guide.model == "guide-model", guide.model)
+
+with patch.dict(os.environ, {
+    **_PRIMARY,
+    "CHATBOT_FALLBACK_API_URL": "https://primary.test/v1",
+    "CHATBOT_FALLBACK_API_KEY": "pk",
+    "CHATBOT_FALLBACK_MODEL": "primary-model",
+}, clear=False):
+    ai = GilbertAI()
+    check("an identical backup is not retried", ai.fallback is None, ai.fallback)
+
+with patch.dict(os.environ, {
+    **_PRIMARY,
+    "CHATBOT_API_KEY": "",
+    "CHATBOT_FALLBACK_API_URL": "https://backup.test/v1",
+    "CHATBOT_FALLBACK_API_KEY": "bk",
+    "CHATBOT_FALLBACK_MODEL": "backup-model",
+}, clear=False):
+    ai = GilbertAI()
+    check("a backup alone keeps the client enabled", ai.enabled is True)
+with patch.dict(os.environ, {**_PRIMARY, "CHATBOT_API_KEY": "", "CHATBOT_FALLBACK_API_URL": ""},
+                clear=False):
+    check("no key anywhere means disabled", GilbertAI().enabled is False)
+
+
+async def _fallback_routing():
+    calls = []
+
+    async def primary_down(self, base_url, api_key, model, messages):
+        calls.append((base_url, model))
+        return "backup says hi" if base_url.endswith("backup.test/v1") else None
+
+    with patch.dict(os.environ, {
+        **_PRIMARY,
+        "CHATBOT_FALLBACK_API_URL": "https://backup.test/v1",
+        "CHATBOT_FALLBACK_API_KEY": "bk",
+        "CHATBOT_FALLBACK_MODEL": "backup-model",
+    }, clear=False):
+        with patch.object(GilbertAI, "_complete_with", primary_down):
+            failed = GilbertAI()
+            down_reply = await failed.complete([{"role": "user", "content": "x"}])
+        down_calls = list(calls)
+        calls.clear()
+
+        async def primary_up(self, base_url, api_key, model, messages):
+            calls.append((base_url, model))
+            return "primary says hi"
+
+        with patch.object(GilbertAI, "_complete_with", primary_up):
+            up_reply = await failed.complete([{"role": "user", "content": "x"}])
+        up_calls = list(calls)
+        calls.clear()
+
+        with patch.dict(os.environ, {"CHATBOT_FALLBACK_API_URL": "", "CHATBOT_FALLBACK_API_KEY": ""},
+                        clear=False):
+            lonely = GilbertAI()
+        with patch.object(GilbertAI, "_complete_with", primary_down):
+            lonely_reply = await lonely.complete([{"role": "user", "content": "x"}])
+    return down_reply, down_calls, up_reply, up_calls, lonely_reply
+
+
+down_reply, down_calls, up_reply, up_calls, lonely_reply = asyncio.run(_fallback_routing())
+check("a dead primary falls back", down_reply == "backup says hi", down_reply)
+check("the primary is tried before the backup",
+      down_calls and down_calls[0][0] == "https://primary.test/v1", down_calls)
+check("the backup model is the one used",
+      len(down_calls) == 2 and down_calls[-1][1] == "backup-model", down_calls)
+check("a healthy primary never calls the backup",
+      up_calls == [("https://primary.test/v1", "primary-model")], up_calls)
+check("no backup configured still returns None", lonely_reply is None, lonely_reply)
 
 # --- live lookup decision, formatting and guards ---------------------------
 check("platform note names 1.20.1", "1.20.1" in lookup.platform_note())

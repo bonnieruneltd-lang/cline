@@ -1,14 +1,24 @@
 # Agent guide — optimized read-first version
 
-> **Current state (2026-11-10):** 119 commands / 17 cogs, all 24 checks green
-> on this checkout. Casino cards are simplified — one headline, three figures
-> (Bet / Payout / Wallet) and one spectator line; the house stack lives on
-> `/casino balance` — **uploaded, needs a panel restart**. The **Forge mod is
-> implemented** (`forge-mod/`, Minecraft 1.20.1 / Forge 47.x, builds
+> **Current state (2026-11-11):** 119 commands / 17 cogs, all 24 checks green
+> on this checkout. **AI providers switched 2026-11-11 (uploaded, restart
+> pending):** the personas (Gilbert + Albert, `/poker` names) run on Google AI
+> Studio `gemini-3.5-flash`; the daily guide runs on DeepSeek `deepseek-v4-pro`
+> with its own `DAILY_GUIDE_API_KEY`; the Cline pass key is the **backup for
+> either** (`CHATBOT_FALLBACK_*`, `DAILY_GUIDE_FALLBACK_MODEL`), and
+> `GilbertAI.complete()` retries any failed primary once there. **Also uploaded
+> 2026-11-10 (stamp `20261110-164655`, 11 files), restart pending:**
+> `/casino withdraw` keeps a worst-case reserve for open
+> blackjack/poker hands (`open_hand_stakes` + `casino.reserve_for_open_hands`,
+> `House Reserve` refusal, `/casino balance` shows the held line); account names
+> are unique ignoring case (`_create_account`/`rename_account` raise `NameTaken`);
+> name and leaderboard indexes plus a boot `PRAGMA quick_check` and a
+> WAL-checkpoint on close. Casino cards are simplified — one headline, three
+> figures (Bet / Payout / Wallet) and one spectator line; the house stack lives
+> on `/casino balance`. The **Forge mod is implemented** (`forge-mod/`, sources
+> mirrored into this checkout 2026-11-10, Minecraft 1.20.1 / Forge 47.x, builds
 > `royalcourt-redeem-1.0.0.jar`), and redemption is gated: an admin must run
-> `/server setip` before any shop key can be claimed in-game. Persona memory,
-> the provider failure breaker and the parallel briefing reads are **uploaded
-> 2026-11-10, waiting for a panel restart**.
+> `/server setip` before any shop key can be claimed in-game.
 
 This is a condensed, scannable summary of `AGENTS.md` (~84 lines against ~1,180).
 Read this first; the full `AGENTS.md` is the reference for everything below.
@@ -70,6 +80,14 @@ python3 -m pyflakes .                        # unused / undefined names
    approved draw) — `commit_balance_to_union()` asserts `_in_tx`.
 8. **Tax runs inside the payout transaction** (`Payout._charge_union_dues` plus
    `individual_tax`); payout and tax never diverge.
+9. **Account names are unique ignoring case.** The uniqueness test lives *inside*
+   the statement (`_create_account`: `INSERT … SELECT … WHERE NOT EXISTS (…
+   COLLATE NOCASE)`, `rename_account`: a `COLLATE NOCASE` clash read) and both
+   raise `NameTaken`. A command-level pre-check is feedback only.
+10. **The Casino is never drained below the hands in play.** `/casino withdraw`
+    reads `open_hand_stakes()` + `reserve_for_open_hands()` inside its
+    transaction and refuses with `House Reserve`; a settlement (or a startup
+    refund) must always find the credits it owes.
 
 ## Persona memory (new 2026-11-10)
 - Every turn is appended to `albert_memory` (`add_persona_turn`, `contract_id`
@@ -103,8 +121,15 @@ python3 -m pyflakes .                        # unused / undefined names
   claim/escrow/reopen, Crown tax/grace, daily sync/Turso mirror, known gaps.
 
 ## Known gaps (don't build these unless decided)
-- Forge mod is README only (`forge-mod/`); target pinned to **Minecraft 1.20.1 /
-  Forge 47.x**. Contract-key redemption is retired (`410 no_in_game_currency`).
-- No `POST /api/preview` for shop keys; `/api/redeem` redeems in the same call.
+- **Resolved 2026-11-10:** case-insensitive name uniqueness, the `/casino
+  withdraw` open-hand reserve, and the missing name/leaderboard indexes. Keep
+  the checks in the statement, not only in the command.
+- Forge mod is **implemented**; the sources are in this checkout since
+  2026-11-10. Target pinned to **Minecraft 1.20.1 / Forge 47.x**. Contract-key
+  redemption is retired (`410 no_in_game_currency`).
+- `POST /api/preview` exists and is non-consuming; there is no further in-game
+  confirmation beyond the Claim button.
 - No schema/backup pruning; retention rule is in `AGENTS.md` "Deploying" and
-  README §12 item 9.
+  README §9 item 9.
+- The Turso mirror is append-only (deleted-member ledger rows survive remotely) —
+  an owner decision, see README §9 item 8.

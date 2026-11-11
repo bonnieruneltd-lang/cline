@@ -128,6 +128,66 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 
 ### Last known live state
 
+2026-11-11 (**personas on Google AI Studio, the guide on DeepSeek, Cline as the
+backup; surface unchanged at 119 commands / 17 cogs**). Working tree green:
+`checks/run_all.py` **24/24**, `compileall`/`pyflakes` clean. **Uploaded but not
+yet loaded** — the process must be restarted from the hosting panel for the new
+`gilbert/ai.py` fallback path and the `.env` provider switch to take effect.
+
+- Personas (`/contract` negotiations, `/poker` bot names): Google AI Studio
+  `https://generativelanguage.googleapis.com/v1beta/openai`,
+  `CHATBOT_MODEL=gemini-3.5-flash`, 0.75, 16,000 tokens, 240 s.
+- Daily guide: DeepSeek `https://api.deepseek.com` with its own
+  `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-v4-pro`, 0.25, 16,000.
+- Backup for **either** key: `CHATBOT_FALLBACK_API_URL=https://api.cline.bot/api/v1`
+  with the Cline pass key, `CHATBOT_FALLBACK_MODEL=cline-pass/deepseek-v4.1-flash-1017`
+  and `DAILY_GUIDE_FALLBACK_MODEL=cline-pass/deepseek-v4-pro`.
+- `GilbertAI.complete()` now retries the whole call once on the backup after any
+  primary failure (401/402/429/5xx/timeout/open breaker) — that is what stops a
+  dry free key from posting the canned persona line for the rest of the day.
+  Keep `CHATBOT_FALLBACK_*` set; do not "simplify" it away.
+- Never print or commit the keys. They live in the live `.env` only; this
+  checkout keeps them out (see `.gitignore`).
+
+2026-11-10 (**casino withdrawal reserve, case-insensitive names, lookup
+indexes; surface unchanged at 119 commands / 17 cogs / 24 checks**). Uploaded
+with backup stamp `20261110-164655` (11 files) and SHA-256 verified one by one;
+the deployed `.py` tree was then pulled into an empty directory, diffed against
+the working copy (81/81 identical) and `checks/run_all.py` run there — **24/24**,
+`compileall`/`pyflakes` clean. **Not yet loaded** — the hosting panel must
+restart the process before any of it runs.
+
+What landed (no economy rule changed, no command added):
+
+1. **`/casino withdraw` reserves the open hands.** `Database.open_hand_stakes()`
+   sums the live stakes per game; `casino.reserve_for_open_hands()` prices the
+   worst case with `blackjack.max_gross()` / `poker.max_gross()` (the same
+   helpers the deal-time cover check uses) and `casino.reserve_note()` names the
+   game. The command reads house + hands + debit inside **one** transaction and
+   answers `House Reserve` (not `Insufficient Funds`) when the credits exist but
+   are owed to a hand. `/casino balance` shows a `Held for open hands` field.
+   A drained house could previously fail a settlement *after* the hand was
+   closed, destroying the player's stake.
+2. **Account names are unique ignoring case.** `Database._create_account()`
+   tests `name = ? COLLATE NOCASE` **inside** the insert and raises the new
+   `NameTaken`; `rename_account()` runs the same test inside its transaction (a
+   self-recasing is still allowed). `creation.py`, `/nation add`, `/kingdom add`,
+   `/nation rename` and `/kingdom rename` answer `Name Taken`; the approval view
+   closes the petition as `failed`, exactly as it already did for
+   `sqlite3.IntegrityError`. Legacy `Foo`/`foo` pairs are left in place.
+3. **Indexes + a clean stop.** `idx_nations_name_nocase`,
+   `idx_kingdoms_name_nocase`, `idx_nations_balance`, `idx_kingdoms_balance`,
+   `idx_blackjack_guild`, `idx_poker_guild` are `CREATE INDEX IF NOT EXISTS`
+   entries, so they appear when `connect()` runs on the live database. Measured
+   at 20,000 nations + 20,000 kingdoms: name lookup 3.61→0.50 ms, kingdom lookup
+   3.67→0.47 ms, leaderboard top-25 5.33→0.60 ms. `Database.close()` runs
+   `PRAGMA wal_checkpoint(TRUNCATE)` + `PRAGMA optimize`; `setup_hook()` logs
+   `PRAGMA quick_check` and the database/WAL sizes at boot.
+4. **`forge-mod/` sources are in the checkout.** The host has held the full mod
+   since 2026-11-07 but the working copy only had the README; the Java sources,
+   Gradle files, wrapper and `mods.toml` are now mirrored (built jar and
+   `build/` stay ignored).
+
 2026-11-09 (**casino UI simplified; surface unchanged at 119 commands / 17
 cogs**). Every gambling card now uses one shape — one headline, three figures
 (**Bet / Payout / Wallet**) and one spectator line — and the house stack lives
@@ -1331,38 +1391,41 @@ consistent.
 
 ## Known gaps (not implemented)
 
-- `nations` / `kingdoms` use a case-sensitive `UNIQUE (guild_id, name)` while
-  every lookup is `COLLATE NOCASE`. The commands check before writing, so a
-  duplicate that differs only by case needs two simultaneous requests; a
-  `UNIQUE ... COLLATE NOCASE` index would close the window but needs a
-  migration and a duplicate check first.
-- `/casino withdraw` does not reserve the worst-case payout of open blackjack or
-  poker hands. Draining the house mid-hand can make settlement and the startup
-  refund fail; a withdraw-time reserve check would close it. The deal-time cover
-  check itself is correct.
-- Forge mod: `forge-mod/` is a **README only** (no Java, Gradle or `mods.toml`).
-  The target is pinned to **Minecraft 1.20.1 / Forge 47.x** (owner decision,
-  2026-11-06) and the README now carries the verified `/api/redeem` payload, the
-  four item-key families, the known gaps and a build order. Contract-key
-  redemption is retired (`410 no_in_game_currency`) — do not build it.
-- There is no non-consuming `POST /api/preview` for shop keys: `/api/redeem`
-  marks the order redeemed in the same call, so a client cannot show a key's
-  contents before spending it and a disconnect between the POST and the item
-  grant burns the key. Add the preview route before any mod work (README
-  section 9 item 10).
+- **Resolved 2026-11-10 — account names were case-sensitive in `UNIQUE` but
+  case-insensitive in every query.** `Database._create_account()` now tests the
+  name with `COLLATE NOCASE` inside the insert and `rename_account()` inside its
+  transaction, both raising `NameTaken`; a `UNIQUE … COLLATE NOCASE` index is
+  therefore *not* needed (and would fail on a legacy `Foo`/`foo` pair). Do not
+  reintroduce a pre-check-only path: the check must live in the statement.
+- **Resolved 2026-11-10 — `/casino withdraw` did not reserve open hands.**
+  `Database.open_hand_stakes()` + `casino.reserve_for_open_hands()` are read
+  inside the withdrawal transaction; the deal-time cover check is unchanged.
+- **Forge mod: implemented, and the sources are in the checkout (2026-11-10).**
+  `forge-mod/` holds `src/main/java/com/royalcourt/redeem/…`, `build.gradle`,
+  `settings.gradle`, `gradle.properties`, the Gradle wrapper and `mods.toml`
+  (the built jar and `build/` are ignored). Target pinned to **Minecraft 1.20.1
+  / Forge 47.x** (owner decision, 2026-11-06). Contract-key redemption is
+  retired (`410 no_in_game_currency`) — do not build it.
+- `POST /api/preview` **is** implemented (2026-11-07): non-consuming, same auth
+  and IP gate as `/api/redeem`, so the mod can show the item list before a key
+  is spent. There is still no *in-game* confirmation dialog beyond the clickable
+  Claim button.
 - Contracts approved before `/contract setboard` was configured have no board
   message; they can still be claimed with `/contract claim`.
-- The `checks/` suite **is** the automated test suite: 23 standalone scripts run
+- The `checks/` suite **is** the automated test suite: 24 standalone scripts run
   by `python3 checks/run_all.py`. They cover ledger rollback, payout cycles,
   transfer routing in all nine directions, leverage boundaries, contract
   claim/quota/approval races, draws, Union guards, membership, dues, pricing,
   the Royal Shop and kit checkout, commitments, the `/union` surface, faction
   switching, Crown tax and supplier
   contracts, the individual cap, `/daily`, data deletion, leaderboards, the kit
-  cooldown, coinflip/all-in/slots/roulette/blackjack/poker/fishing, the daily
-  Turso mirror and
+  cooldown, coinflip/all-in/slots/roulette/blackjack/poker/fishing, the casino
+  reserve, the case-insensitive name rules, the query-plan/index assertions, the
+  daily Turso mirror and
   AI-guide configuration, and the cog-load smoke test.
-  `BUG-FIXES.md` lists every check and what it proves.
+  `BUG-FIXES.md` lists every check and what it proves. Nothing still invokes the
+  suite automatically (the boot `PRAGMA quick_check` is a corruption alarm, not
+  the suite).
 - The Turso mirror is **append-only**. `Database.delete_individual()` erases a
   wallet's ledger rows with the balance, but `daily_sync.py` only ever upserts,
   so the erased rows survive remotely (2026-11-06: 681 local vs 685 mirrored

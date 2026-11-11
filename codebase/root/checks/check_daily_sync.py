@@ -313,6 +313,54 @@ check("formatted source has modules", "MODULES" in text)
 check("formatted source caps length",
       len(daily_sync.format_source(source, max_chars=50)) == 50)
 
+# The guide can also run on its own provider and its own backup model, so the
+# personas' fast key and the guide's long-document key can fail independently.
+import asyncio  # noqa: E402
+
+with patch.dict(os.environ, {
+    "DAILY_GUIDE_API_URL": "https://api.deepseek.com",
+    "DAILY_GUIDE_API_KEY": "guide-key",
+    "DAILY_GUIDE_FALLBACK_MODEL": "cline-pass/deepseek-v4-pro",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide provider URL from env",
+          ds.guide_api_url == "https://api.deepseek.com", ds.guide_api_url)
+    check("guide provider key from env", ds.guide_api_key == "guide-key", ds.guide_api_key)
+    check("guide backup model from env",
+          ds.guide_fallback_model == "cline-pass/deepseek-v4-pro", ds.guide_fallback_model)
+
+    captured = {}
+
+    class CaptureAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.enabled = True
+
+        async def complete(self, messages):
+            return "GUIDE"
+
+    original_ai = daily_sync.GilbertAI
+    daily_sync.GilbertAI = CaptureAI
+    try:
+        out = asyncio.run(ds.generate_guide(source))
+    finally:
+        daily_sync.GilbertAI = original_ai
+    check("the guide hands its provider to the client",
+          captured.get("api_url") == "https://api.deepseek.com", captured)
+    check("the guide hands its key to the client",
+          captured.get("api_key") == "guide-key", captured)
+    check("the guide hands its backup model to the client",
+          captured.get("fallback_model") == "cline-pass/deepseek-v4-pro", captured)
+    check("the model's guide is returned as-is", out == "GUIDE", out)
+
+with patch.dict(os.environ, {
+    "DAILY_GUIDE_API_URL": "", "DAILY_GUIDE_API_KEY": "", "DAILY_GUIDE_FALLBACK_MODEL": "",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("no guide provider means the shared one",
+          ds.guide_api_url == "" and ds.guide_api_key == "", (ds.guide_api_url, ds.guide_api_key))
+    check("no guide backup model means the shared one", ds.guide_fallback_model == "")
+
 guide = daily_sync.fallback_guide(source)
 check("fallback guide is about the bot", "How the Royal Court works" in guide)
 check("fallback guide groups commands",

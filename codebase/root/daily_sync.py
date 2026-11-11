@@ -19,10 +19,13 @@ without touching this file.
 2. **Bot guide** - collects the bot's own surface (every slash command with its
    arguments and description, each loaded module's purpose, the fixed economy
    constants and the verification scripts), asks the configured
-   OpenAI-compatible model (the shared ``CHATBOT_*`` config Gilbert and Albert
-   use) to write a plain-language explanation of *how the bot works and how to
-   understand it*, then posts it to a Discord channel and/or writes it to a
-   Markdown file and stores it in the Turso mirror (``daily_guides``).
+   OpenAI-compatible model (the shared ``CHATBOT_*`` config, or the guide's own
+   ``DAILY_GUIDE_API_URL`` / ``DAILY_GUIDE_API_KEY`` when they are set) to write
+   a plain-language explanation of *how the bot works and how to understand it*,
+   then posts it to a Discord channel and/or writes it to a Markdown file and
+   stores it in the Turso mirror (``daily_guides``). A failed provider call is
+   retried once on ``CHATBOT_FALLBACK_*`` before ``fallback_guide()`` is used, so
+   a guide key that runs dry does not cost the day's document.
 
 A missing Turso URL or token simply disables that half of the job with a log
 line; it never crashes the bot.
@@ -693,6 +696,14 @@ class DailySync:
         # cooler temperature and a bigger budget than a snappy negotiation
         # reply. Empty DAILY_GUIDE_MODEL means "same model as the personas".
         self.guide_model = env_str("DAILY_GUIDE_MODEL", "")
+        # ...and on its own provider. The personas answer in a few seconds on a
+        # fast chat model; a once-a-day document is better served by a separate
+        # key, so it can run dry without taking the personas down with it.
+        self.guide_api_url = env_str("DAILY_GUIDE_API_URL", "")
+        self.guide_api_key = env_str("DAILY_GUIDE_API_KEY", "")
+        # The shared backup provider is used by both, but the guide's own model
+        # is the big tier while the personas use the fast one.
+        self.guide_fallback_model = env_str("DAILY_GUIDE_FALLBACK_MODEL", "")
         self.guide_temperature = max(
             0.0, min(1.0, env_float("DAILY_GUIDE_TEMPERATURE", DEFAULT_GUIDE_TEMPERATURE))
         )
@@ -1142,6 +1153,9 @@ class DailySync:
             model=self.guide_model or None,
             temperature=self.guide_temperature,
             max_tokens=self.guide_max_tokens,
+            api_url=self.guide_api_url or None,
+            api_key=self.guide_api_key or None,
+            fallback_model=self.guide_fallback_model or None,
         )
         guide: Optional[str] = None
         if ai.enabled:
