@@ -138,7 +138,9 @@ yet loaded** — the process must be restarted from the hosting panel for the ne
   `https://generativelanguage.googleapis.com/v1beta/openai`,
   `CHATBOT_MODEL=gemini-3.5-flash`, 0.75, 16,000 tokens, 240 s.
 - Daily guide: DeepSeek `https://api.deepseek.com` with its own
-  `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-v4-pro`, 0.25, 16,000.
+  `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-chat`, 0.25, 16,000,
+  `DAILY_GUIDE_TIMEOUT=600` (the flash tier writes the document in ~16 s where
+  the pro tier needed 206 s and kept tripping the persona timeout).
 - Backup for **either** key: `CHATBOT_FALLBACK_API_URL=https://api.cline.bot/api/v1`
   with the Cline pass key, `CHATBOT_FALLBACK_MODEL=cline-pass/deepseek-v4.1-flash-1017`
   and `DAILY_GUIDE_FALLBACK_MODEL=cline-pass/deepseek-v4-pro`.

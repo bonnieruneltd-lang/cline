@@ -242,6 +242,7 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `DAILY_GUIDE_API_URL` | Base URL for the guide alone (default: `CHATBOT_API_URL`) |
 | `DAILY_GUIDE_API_KEY` | Key for the guide alone (default: `CHATBOT_API_KEY`) |
 | `DAILY_GUIDE_FALLBACK_MODEL` | Backup model for the guide only (default: `CHATBOT_FALLBACK_MODEL`) |
+| `DAILY_GUIDE_TIMEOUT` | Guide request timeout in seconds (default: `CHATBOT_TIMEOUT`, 0 = shared) |
 | `DAILY_GUIDE_TEMPERATURE` | Guide temperature, clamped 0–1 (default 0.25) |
 | `DAILY_GUIDE_MAX_TOKENS` | Guide output token budget (default 12000) |
 | `TAVILY_API_KEY` | Enables live Minecraft lookups for Albert and Gilbert when set |
@@ -258,7 +259,7 @@ Both personas and the guide speak the same OpenAI-compatible protocol
 | Role | Live setting | Why |
 |---|---|---|
 | Gilbert + Albert | `CHATBOT_MODEL=gemini-3.5-flash` via Google AI Studio (`https://generativelanguage.googleapis.com/v1beta/openai`), 0.75, 16k, 240 s | A player watches "typing…", so latency wins: measured 5.8–8.0 s and correct on the leverage cap, tranche and case ID |
-| Daily guide | `DAILY_GUIDE_API_URL=https://api.deepseek.com` + its own `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-v4-pro`, 0.25, 16k | Runs once a day at 06:00 UTC — 4.4 s for a three-bullet sample, and a separate key means it can run dry without silencing the personas |
+| Daily guide | `DAILY_GUIDE_API_URL=https://api.deepseek.com` + its own `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-chat`, `DAILY_GUIDE_TIMEOUT=600`, 0.25, 16k | A separate key means it can run dry without silencing the personas; the *flash* tier wrote the same 12k-char document in 16 s where `deepseek-v4-pro` took 206 s (inside the 240 s persona timeout by luck, not by design) |
 | Backup (both) | `CHATBOT_FALLBACK_API_URL=https://api.cline.bot/api/v1`, the Cline pass key, `CHATBOT_FALLBACK_MODEL=cline-pass/deepseek-v4.1-flash-1017`, `DAILY_GUIDE_FALLBACK_MODEL=cline-pass/deepseek-v4-pro` | A revoked or empty primary key retries once here instead of posting the canned line; verified at 0.8 s and 2.5 s |
 
 `DAILY_GUIDE_MODEL` / `_TEMPERATURE` / `_MAX_TOKENS` are **overrides only**, and
@@ -1325,7 +1326,8 @@ are historical: where an older one says "not uploaded" or quotes a rate such as
 
 **What changed.** All chat AIs (Gilbert + Albert, and `/poker`'s bot names) moved
 to Google AI Studio `gemini-3.5-flash` (0.75, 16k, 240 s) on a Google Studio key;
-the once-a-day summarising guide moved to DeepSeek `deepseek-v4-pro` (0.25, 16k)
+the once-a-day summarising guide moved to DeepSeek `deepseek-chat` (0.25, 16k,
+600 s)
 on its **own** `DAILY_GUIDE_API_KEY`. The Cline pass key and its two models are
 now the **backup for either key**, so a key that runs dry or is revoked no longer
 silences a persona or drops the guide to `fallback_guide()`.

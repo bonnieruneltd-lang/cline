@@ -710,6 +710,11 @@ class DailySync:
         self.guide_max_tokens = max(
             512, env_int("DAILY_GUIDE_MAX_TOKENS", DEFAULT_GUIDE_MAX_TOKENS)
         )
+        # The guide writes a long document once a day, so it must not inherit the
+        # snappy persona timeout: a reasoning model on the full bot surface took
+        # 206 s for 12k chars, and the production source is several times bigger.
+        # 0 keeps the shared CHATBOT_TIMEOUT.
+        self.guide_timeout = max(0.0, env_float("DAILY_GUIDE_TIMEOUT", 0.0))
 
         self._task: Optional[tasks.Loop] = None
         self._turso_task: Optional[tasks.Loop] = None
@@ -1153,6 +1158,7 @@ class DailySync:
             model=self.guide_model or None,
             temperature=self.guide_temperature,
             max_tokens=self.guide_max_tokens,
+            timeout=self.guide_timeout or None,
             api_url=self.guide_api_url or None,
             api_key=self.guide_api_key or None,
             fallback_model=self.guide_fallback_model or None,

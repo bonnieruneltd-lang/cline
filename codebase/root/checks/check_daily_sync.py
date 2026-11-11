@@ -361,6 +361,35 @@ with patch.dict(os.environ, {
           ds.guide_api_url == "" and ds.guide_api_key == "", (ds.guide_api_url, ds.guide_api_key))
     check("no guide backup model means the shared one", ds.guide_fallback_model == "")
 
+# The guide's own timeout: a long document must not inherit the persona budget.
+with patch.dict(os.environ, {"DAILY_GUIDE_TIMEOUT": "", "CHATBOT_TIMEOUT": "240"}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide timeout defaults to the shared one", ds.guide_timeout == 0.0, ds.guide_timeout)
+with patch.dict(os.environ, {"DAILY_GUIDE_TIMEOUT": "600"}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide timeout from env", ds.guide_timeout == 600.0, ds.guide_timeout)
+    captured = {}
+
+    class CaptureAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.enabled = True
+
+        async def complete(self, messages):
+            return "GUIDE"
+
+    original_ai = daily_sync.GilbertAI
+    daily_sync.GilbertAI = CaptureAI
+    try:
+        asyncio.run(ds.generate_guide(source))
+    finally:
+        daily_sync.GilbertAI = original_ai
+    check("the guide hands its timeout to the client",
+          captured.get("timeout") == 600.0, captured.get("timeout"))
+with patch.dict(os.environ, {"DAILY_GUIDE_TIMEOUT": "-5"}, clear=False):
+    check("a negative guide timeout means the shared one",
+          daily_sync.DailySync(FakeBot(None)).guide_timeout == 0.0)
+
 guide = daily_sync.fallback_guide(source)
 check("fallback guide is about the bot", "How the Royal Court works" in guide)
 check("fallback guide groups commands",

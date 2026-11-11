@@ -108,8 +108,12 @@ same key (`DAILY_GUIDE_MODEL`, `DAILY_GUIDE_TEMPERATURE`,
 
 **Live choice (2026-11-11):** personas on Google AI Studio
 `gemini-3.5-flash` (0.75, 16,000, 240 s) — a measured 5.8–8.0 s per negotiation
-reply; the guide on DeepSeek `deepseek-v4-pro` (0.25, 16,000) with its own key
-(`DAILY_GUIDE_API_KEY`). The backup for both is the Cline pass key: the personas
+reply; the guide on DeepSeek `deepseek-chat` (0.25, 16,000, 600 s) with its own key
+(`DAILY_GUIDE_API_KEY`). Measured on the real guide prompt: `deepseek-chat` wrote
+12,378 chars in 16 s; `deepseek-v4-pro` needed 206 s for the same document and
+would have blown the 240 s persona timeout on the full source, so the flash tier
+plus its own 600 s budget is the guide setting. The backup for both is the Cline
+pass key: the personas
 fall back to `cline-pass/deepseek-v4.1-flash-1017`, the guide to
 `cline-pass/deepseek-v4-pro` (`DAILY_GUIDE_FALLBACK_MODEL`). Verified live: a
 deliberately invalid Google key answered through the Cline fallback in 0.8 s and
