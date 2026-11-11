@@ -1,12 +1,14 @@
 """Concurrent /nation request must create exactly one account and one bonus row.
 
 Also covers the approval path when a direct /nation add wins the name race:
-the IntegrityError must close the petition instead of leaving it pending.
+the IntegrityError must close the petition instead of leaving it pending, and
+the case-insensitive name rules (the schema's UNIQUE is case-sensitive while
+every lookup is COLLATE NOCASE) for create, rename and the commands.
 """
 import asyncio, os, sys, tempfile
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 import sqlite3
-from database import Database
+from database import Database, NameTaken
 from creation import CreationApprovalView, found_account
 from cogs.kingdom import Kingdom
 from cogs.nation import Nation
@@ -58,7 +60,7 @@ async def main():
         try:
             await found_account(db, g, "nation", "Same", 111, 999, note="t")
             return "created"
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, NameTaken):
             return "refused"
 
     res = await asyncio.gather(found(), found(), found())
@@ -125,6 +127,87 @@ async def main():
         Kingdom.add, Kingdom(FakeBot(db)), "create_kingdom", "DirectKingdom", "kingdom"
     )
     ok = ok and direct_nation and direct_kingdom
+
+    # --- a name is unique ignoring case -----------------------------------
+    # UNIQUE (guild_id, name) is case-sensitive but every lookup is
+    # COLLATE NOCASE, so "Alpha" and "ALPHA" used to be able to coexist and one
+    # of them was unreachable. The insert now re-checks the name itself.
+    async def found_named(name):
+        try:
+            await found_account(db, g, "nation", name, 111, 999, note="case")
+            return "created"
+        except NameTaken:
+            return "refused"
+
+    first = await found_named("Alpha")
+    second = await found_named("ALPHA")
+    alpha_rows = await db.fetchall(
+        "SELECT * FROM nations WHERE guild_id = ? AND name = ? COLLATE NOCASE", (g, "alpha")
+    )
+    print("case variant:", first, second, "rows:", len(alpha_rows))
+    ok = ok and (
+        first == "created" and second == "refused" and len(alpha_rows) == 1
+        and (await db.get_nation(g, "aLpHa"))["id"] == alpha_rows[0]["id"]
+    )
+
+    # Three founders, three casings, one winner.
+    race = await asyncio.gather(found_named("Beta"), found_named("beta"), found_named("BETA"))
+    beta_rows = await db.fetchall(
+        "SELECT * FROM nations WHERE guild_id = ? AND name = ? COLLATE NOCASE", (g, "beta")
+    )
+    beta_tx = await db.fetchall(
+        "SELECT * FROM transactions WHERE kind='nation_create' AND account_name = ? COLLATE NOCASE",
+        ("beta",),
+    )
+    print("case race:", race, "rows:", len(beta_rows), "bonus rows:", len(beta_tx))
+    ok = ok and race.count("created") == 1 and len(beta_rows) == 1 and len(beta_tx) == 1
+
+    # The same rule for kingdoms.
+    await db.create_kingdom(g, "Kalmar", 222)
+    try:
+        await db.create_kingdom(g, "kalmar", 222)
+        kingdom_dup = False
+    except NameTaken:
+        kingdom_dup = True
+    kalmar = await db.fetchall(
+        "SELECT * FROM kingdoms WHERE guild_id = ? AND name = ? COLLATE NOCASE", (g, "kalmar")
+    )
+    print("kingdom case variant refused:", kingdom_dup, "rows:", len(kalmar))
+    ok = ok and kingdom_dup and len(kalmar) == 1
+
+    # A rename cannot take another account's name, whatever the casing, and a
+    # pure case change of its own name is still allowed.
+    gamma = await db.create_nation(g, "Gamma", 111)
+    try:
+        await db.rename_account("nation", gamma, "alpha")
+        rename_clash = False
+    except NameTaken:
+        rename_clash = True
+    unchanged = (await db.get_nation_by_id(gamma))["name"] == "Gamma"
+    await db.rename_account("nation", gamma, "GAMMA")
+    recased = (await db.get_nation_by_id(gamma))["name"] == "GAMMA"
+    print("rename clash refused:", rename_clash, "unchanged:", unchanged, "recased:", recased)
+    ok = ok and rename_clash and unchanged and recased
+
+    # /nation rename must report the refusal instead of surfacing an exception.
+    delta = await db.create_nation(g, "Delta", 111)
+    real_rename = db.rename_account
+
+    async def rename_boom(*args, **kwargs):
+        raise NameTaken("nations", "Epsilon")
+
+    db.rename_account = rename_boom
+    rename_interaction = FakeInteraction()
+    try:
+        await Nation.rename.callback(Nation(FakeBot(db)), rename_interaction, "Delta", "Epsilon")
+    finally:
+        db.rename_account = real_rename
+    rename_reply = (
+        rename_interaction.response.sent[-1].title if rename_interaction.response.sent else None
+    )
+    delta_name = (await db.get_nation_by_id(delta))["name"]
+    print("/nation rename reply:", rename_reply, "name:", delta_name)
+    ok = ok and "Name Taken" in (rename_reply or "") and delta_name == "Delta"
 
     print("VERDICT:", "ok" if ok else "BUG")
     await db.close()

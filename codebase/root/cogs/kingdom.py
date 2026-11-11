@@ -20,6 +20,7 @@ import config
 import embeds
 from checks import admin_only
 from creation import creation_bonus, found_account, submit_creation_request
+from database import NameTaken
 from payouts import kingdom_payout
 from utils import kingdom_autocomplete, nation_autocomplete, money
 
@@ -106,10 +107,11 @@ class Kingdom(commands.Cog):
                 leader.id if leader else None, interaction.user.id,
                 note="Founded directly by an administrator",
             )
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, NameTaken):
             # A petition approval can win the name race between the check
             # above and the insert. Its status flip and our insert share the
-            # database lock, so this is the same one-row outcome.
+            # database lock, so this is the same one-row outcome. NameTaken is
+            # the case-insensitive clash (``Foo`` vs ``foo``).
             return await interaction.response.send_message(
                 embed=embeds.error("Name Taken", f"A kingdom named **{name}** already exists."),
                 ephemeral=True,
@@ -160,13 +162,21 @@ class Kingdom(commands.Cog):
                     ephemeral=True,
                 )
 
-        async with self.db.transaction():
-            await self.db.rename_account("kingdom", row["id"], new_name)
-            await self.db.log_tx(
-                guild_id=interaction.guild_id, kind="kingdom_rename",
-                account_type="kingdom", account_id=row["id"], account_name=new_name,
-                balance_after=int(row["balance"]), actor_id=interaction.user.id,
-                note=f"Renamed from {row['name']}",
+        try:
+            async with self.db.transaction():
+                await self.db.rename_account("kingdom", row["id"], new_name)
+                await self.db.log_tx(
+                    guild_id=interaction.guild_id, kind="kingdom_rename",
+                    account_type="kingdom", account_id=row["id"], account_name=new_name,
+                    balance_after=int(row["balance"]), actor_id=interaction.user.id,
+                    note=f"Renamed from {row['name']}",
+                )
+        except NameTaken:
+            # The clash check above is feedback only; a rename that lands in the
+            # same instant as another one is refused here, with nothing written.
+            return await interaction.response.send_message(
+                embed=embeds.error("Name Taken", f"A kingdom named **{new_name}** already exists."),
+                ephemeral=True,
             )
         await interaction.response.send_message(
             embed=embeds.success(

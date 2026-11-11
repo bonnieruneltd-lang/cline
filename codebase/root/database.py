@@ -125,6 +125,23 @@ class AccountMissing(Exception):
         self.row_id = row_id
 
 
+class NameTaken(Exception):
+    """Raised when a nation/kingdom name is already in use, ignoring case.
+
+    ``UNIQUE (guild_id, name)`` in the schema is **case-sensitive** while every
+    lookup is ``COLLATE NOCASE``, so ``Foo`` and ``foo`` could live side by side
+    and then resolve to whichever row the index happened to return. The insert
+    and the rename therefore re-check the name with ``COLLATE NOCASE`` inside
+    their own transaction (the writer is single, so nothing can slip in between)
+    and raise this instead of writing a second, unreachable account.
+    """
+
+    def __init__(self, table: str, name: str) -> None:
+        super().__init__(f"{table} already holds a name matching {name!r}")
+        self.table = table
+        self.name = name
+
+
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime(ISO)
 
@@ -225,6 +242,18 @@ CREATE INDEX IF NOT EXISTS idx_tx_account ON transactions (account_type, account
 CREATE INDEX IF NOT EXISTS idx_tx_union
     ON transactions (guild_id, account_type, account_id, kind);
 CREATE INDEX IF NOT EXISTS idx_nation_kg  ON nations (kingdom_id);
+-- Names are always resolved with COLLATE NOCASE, which the BINARY
+-- UNIQUE (guild_id, name) index cannot serve: without these, every lookup
+-- (/nation show, /transfer, autocomplete, and the "is this name free?" test)
+-- scans the table. Balance ordering gets its own index for /leaderboard.
+CREATE INDEX IF NOT EXISTS idx_nations_name_nocase
+    ON nations (guild_id, name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_kingdoms_name_nocase
+    ON kingdoms (guild_id, name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_nations_balance
+    ON nations (guild_id, balance DESC, name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_kingdoms_balance
+    ON kingdoms (guild_id, balance DESC, name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_creations  ON pending_creations (guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_draws      ON pending_draws (guild_id, status);
 
@@ -604,6 +633,9 @@ CREATE TABLE IF NOT EXISTS blackjack_hands (
 );
 
 CREATE INDEX IF NOT EXISTS idx_blackjack_status ON blackjack_hands (status);
+-- The withdrawal guard sums the open hands of *one* guild, and the startup
+-- refund lists them by status; (guild_id, status) serves both.
+CREATE INDEX IF NOT EXISTS idx_blackjack_guild ON blackjack_hands (guild_id, status);
 
 -- Poker tables in progress. The whole hand lives in memory, but the buy-in is
 -- real money held by the Casino. A restart cannot rebuild the table, so this
@@ -621,6 +653,7 @@ CREATE TABLE IF NOT EXISTS poker_hands (
 );
 
 CREATE INDEX IF NOT EXISTS idx_poker_status ON poker_hands (status);
+CREATE INDEX IF NOT EXISTS idx_poker_guild  ON poker_hands (guild_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_contracts_guild  ON contracts (guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_contracts_nation ON contracts (nation_id, cycle);
@@ -775,6 +808,23 @@ class Database:
             "UPDATE faction_members SET status = 'active' WHERE faction = 'crown'"
         )
 
+    async def quick_check(self) -> str:
+        """``PRAGMA quick_check``: ``"ok"`` or the first problem it reports.
+
+        ``quick_check`` skips the index-versus-table comparison that the full
+        ``integrity_check`` performs, but it still catches a corrupt page, a
+        broken b-tree and an unreadable freelist, and on a database this size it
+        is effectively free. The bot logs the answer at boot and keeps running
+        either way: an owner who can see the warning can restore from the mirror,
+        whereas a bot that refuses to start tells them nothing.
+        """
+        assert self.conn is not None
+        cur = await self.conn.execute("PRAGMA quick_check")
+        rows = await cur.fetchall()
+        await cur.close()
+        problems = [str(row[0]) for row in rows if str(row[0]).lower() != "ok"]
+        return problems[0] if problems else "ok"
+
     async def close(self) -> None:
         # Drain and close the readers first; the writer must be last so no
         # in-flight read is torn down mid-statement.
@@ -786,6 +836,20 @@ class Database:
                 pass
         self._read_conns.clear()
         if self.conn is not None:
+            # Fold the WAL back into the main file and refresh the planner's
+            # statistics on the way out: a clean stop leaves one database file
+            # behind instead of a growing -wal a panel operator has to reason
+            # about, and the next boot plans against a current ANALYZE snapshot.
+            # Both are best effort - the panel may be killing us on a short
+            # timeout, and a shutdown must never raise.
+            try:
+                await self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:  # pragma: no cover - shutdown best effort
+                pass
+            try:
+                await self.conn.execute("PRAGMA optimize")
+            except Exception:  # pragma: no cover - shutdown best effort
+                pass
             await self.conn.close()
             self.conn = None
 
@@ -913,12 +977,36 @@ class Database:
         return list(rows)
 
     # -- nations -----------------------------------------------------------
+    async def _create_account(
+        self, table: str, guild_id: int, name: str, leader_id: Optional[int]
+    ) -> int:
+        """Insert a nation/kingdom unless a case-insensitive namesake exists.
+
+        Returns the new row id; raises :class:`NameTaken` when the name is
+        already held in this guild. The uniqueness test runs **inside** the
+        insert statement, so two founders race on the writer and exactly one
+        row is written. The commands' own pre-checks stay as fast feedback
+        only: they cannot see a name that appears between the check and the
+        write. A legacy database that already holds ``Foo``/``foo`` keeps both
+        rows (nothing is deleted here) but can no longer grow a third.
+        """
+        assert table in ("nations", "kingdoms")
+        async with self.transaction():
+            cur = await self.execute(
+                f"""INSERT INTO {table} (guild_id, name, leader_id, created_at)
+                    SELECT ?, ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM {table}
+                        WHERE guild_id = ? AND name = ? COLLATE NOCASE
+                    )""",
+                (guild_id, name, leader_id, now_iso(), guild_id, name),
+            )
+            if cur.rowcount != 1:
+                raise NameTaken(table, name)
+            return int(cur.lastrowid)
+
     async def create_nation(self, guild_id: int, name: str, leader_id: Optional[int]) -> int:
-        cur = await self.execute(
-            "INSERT INTO nations (guild_id, name, leader_id, created_at) VALUES (?, ?, ?, ?)",
-            (guild_id, name, leader_id, now_iso()),
-        )
-        return cur.lastrowid
+        return await self._create_account("nations", guild_id, name, leader_id)
 
     async def get_nation(self, guild_id: int, name: str) -> Optional[aiosqlite.Row]:
         return await self.fetchone(
@@ -1062,11 +1150,7 @@ class Database:
 
     # -- kingdoms ----------------------------------------------------------
     async def create_kingdom(self, guild_id: int, name: str, leader_id: Optional[int]) -> int:
-        cur = await self.execute(
-            "INSERT INTO kingdoms (guild_id, name, leader_id, created_at) VALUES (?, ?, ?, ?)",
-            (guild_id, name, leader_id, now_iso()),
-        )
-        return cur.lastrowid
+        return await self._create_account("kingdoms", guild_id, name, leader_id)
 
     async def get_kingdom(self, guild_id: int, name: str) -> Optional[aiosqlite.Row]:
         return await self.fetchone(
@@ -1162,13 +1246,36 @@ class Database:
         Open contracts store the account name as a snapshot, so they are
         refreshed in the same transaction. Closed cases keep the name they were
         argued under; ``transactions`` rows are history and are never rewritten.
+
+        The case-insensitive clash test runs inside this transaction, so two
+        simultaneous renames cannot leave ``Foo`` and ``foo`` in the same guild.
+        Raises :class:`NameTaken` when the name already belongs to another
+        account.
         """
         assert account_type in ("nation", "kingdom")
         table = "nations" if account_type == "nation" else "kingdoms"
         async with self.transaction():
-            await self.execute(
-                f"UPDATE {table} SET name = ? WHERE id = ?", (new_name, account_id)
+            current = await self.fetchone(
+                f"SELECT guild_id, name FROM {table} WHERE id = ?", (account_id,)
             )
+            if current is None:
+                raise AccountMissing(table, account_id)
+            if str(current["name"]).lower() == str(new_name).lower():
+                # A pure case change keeps the same row: only the casing moves.
+                await self.execute(
+                    f"UPDATE {table} SET name = ? WHERE id = ?", (new_name, account_id)
+                )
+            else:
+                clash = await self.fetchone(
+                    f"""SELECT id FROM {table}
+                        WHERE guild_id = ? AND name = ? COLLATE NOCASE AND id <> ?""",
+                    (int(current["guild_id"]), new_name, account_id),
+                )
+                if clash is not None:
+                    raise NameTaken(table, new_name)
+                await self.execute(
+                    f"UPDATE {table} SET name = ? WHERE id = ?", (new_name, account_id)
+                )
             await self.execute(
                 """UPDATE contracts SET nation_name = ?
                    WHERE owner_type = ? AND owner_id = ?
@@ -2564,6 +2671,31 @@ class Database:
         return await self.fetchall(
             "SELECT * FROM poker_hands WHERE status = 'open' ORDER BY id"
         )
+
+    async def open_hand_stakes(self, guild_id: int) -> dict[str, int]:
+        """Held stakes of every hand still in play in this guild.
+
+        Returns ``{"blackjack": total, "poker": total}`` — one query, two
+        branches, so the Casino can price the worst-case payout it still owes
+        before an admin withdraws house credits. The stakes themselves are
+        already inside the house balance (a hand is dealt only after
+        ``begin_wager``); what has to stay behind is the *return* on them, which
+        is what ``casino.reserve_for_open_hands`` adds up.
+        """
+        rows = await self.fetchall(
+            """SELECT 'blackjack' AS game, COALESCE(SUM(stake), 0) AS total
+                 FROM blackjack_hands
+                WHERE guild_id = ? AND status = 'open'
+               UNION ALL
+               SELECT 'poker', COALESCE(SUM(stake), 0)
+                 FROM poker_hands
+                WHERE guild_id = ? AND status = 'open'""",
+            (guild_id, guild_id),
+        )
+        totals = {"blackjack": 0, "poker": 0}
+        for row in rows:
+            totals[str(row["game"])] = int(row["total"])
+        return totals
 
     # ------------------------------------------------------------------
     # Faction membership (Union / Crown) and the Workers' Union view

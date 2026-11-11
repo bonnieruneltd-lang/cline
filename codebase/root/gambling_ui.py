@@ -335,8 +335,14 @@ def poker_result(
     return _footer(embed, footer or "⚜ Royal Court Casino · Texas Hold'em · public table")
 
 
-def casino_floor(house: int) -> discord.Embed:
-    """The public house dashboard shown by /casino balance."""
+def casino_floor(house: int, reserved: int = 0, reserved_note: str = "") -> discord.Embed:
+    """The public house dashboard shown by /casino balance.
+
+    ``reserved`` is the worst-case payout still owed on the hands in play
+    (``casino.reserve_for_open_hands``). It is shown as a separate line so the
+    public balance keeps meaning "credits the house holds", while admins can see
+    what part of it is already spoken for.
+    """
     embed = discord.Embed(
         title="🎰 The Casino · House & Floor",
         description=(
@@ -366,6 +372,16 @@ def casino_floor(house: int) -> discord.Embed:
         ),
         inline=False,
     )
+    if int(reserved) > 0:
+        held = f" — {reserved_note}" if reserved_note else ""
+        embed.add_field(
+            name="Held for open hands",
+            value=(
+                f"**{money(int(reserved))}** stays behind for the hands still in play"
+                f"{held}. `/casino withdraw` cannot touch it."
+            ),
+            inline=False,
+        )
     embed.add_field(name="The Floor", value=SPECTATOR_HINT, inline=False)
     return _footer(embed)
 

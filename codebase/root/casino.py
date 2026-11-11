@@ -31,13 +31,41 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
+import blackjack
 import config
+import poker
 from database import AccountMissing, Database
 
 
 def house_can_cover(house: int, gross: int) -> bool:
     """Whether the Casino can pay ``gross`` out of ``house``."""
     return int(house) >= int(gross)
+
+
+def reserve_for_open_hands(blackjack_stakes: int = 0, poker_stakes: int = 0) -> int:
+    """Worst-case payout the house still owes on the hands in play.
+
+    A hand holds its stake already, but the house owes the *return* on it: a
+    blackjack hand can pay 3:2 (``blackjack.max_gross``) and a poker table pays
+    out the player's final stack, up to every chip at the table
+    (``poker.max_gross``). ``/casino withdraw`` must leave at least this much
+    behind, or a settlement (or the startup refund of an interrupted hand) finds
+    an empty house and the player's stake is stranded.
+
+    This is the same worst case the deal-time ``cover_problem`` test enforces,
+    so a hand that was dealt can always be paid.
+    """
+    return blackjack.max_gross(int(blackjack_stakes)) + poker.max_gross(int(poker_stakes))
+
+
+def reserve_note(blackjack_stakes: int = 0, poker_stakes: int = 0) -> str:
+    """A short breakdown for the withdrawal refusal, or ``""`` when nothing is held."""
+    parts = []
+    if int(blackjack_stakes):
+        parts.append(f"**{int(blackjack_stakes):,}** in blackjack")
+    if int(poker_stakes):
+        parts.append(f"**{int(poker_stakes):,}** in poker")
+    return " and ".join(parts)
 
 
 def cover_problem(house: int, gross: int) -> Optional[str]:

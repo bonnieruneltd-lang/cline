@@ -13,6 +13,7 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.par
 import blackjack
 import casino
 import config
+import poker
 from database import AccountMissing, Database, InsufficientFunds
 
 fails = []
@@ -579,6 +580,112 @@ async def cog_checks():
     await db.close()
 
 
+async def reserve_checks():
+    """A withdrawal must leave the worst-case payout of the open hands behind.
+
+    The house already holds the stakes, but it still owes the *return* on them:
+    a blackjack natural pays 3:2 and a poker table pays out the player's final
+    stack. Draining the house mid-hand used to leave a settlement (or the
+    startup refund) with nothing to pay, which stranded the player's money.
+    """
+    from cogs.games import Casino
+
+    db = Database(os.path.join(tempfile.mkdtemp(), "reserve.db"))
+    await db.connect()
+    g = 1
+    cog = Casino(FakeBot(db))
+    alice = FakeUser(10, "Alice")
+    await db.get_individual(g, 10, "Alice")
+    await db.credit_individual(g, 10, 10_000)
+    await db.credit_casino(g, 100_000)
+
+    check("no hands in play means nothing is reserved",
+          await db.open_hand_stakes(g) == {"blackjack": 0, "poker": 0},
+          await db.open_hand_stakes(g))
+
+    # A 4,000 blackjack hand and a 2,000 poker table are in play.
+    wallet = await db.find_individual(g, 10)
+    async with db.transaction():
+        await casino.begin_wager(db, guild_id=g, wallet=wallet, stake=4_000,
+                                 kind="individual_blackjack")
+        bj_hand = await db.open_blackjack_hand(
+            guild_id=g, discord_id=10, individual_id=int(wallet["id"]), stake=4_000,
+            player_cards="10♠ 9♥", dealer_cards="9♦ 8♣",
+        )
+        await casino.begin_wager(db, guild_id=g, wallet=wallet, stake=2_000,
+                                 kind="individual_poker")
+        poker_hand = await db.open_poker_hand(
+            guild_id=g, discord_id=10, individual_id=int(wallet["id"]), stake=2_000,
+        )
+
+    stakes = await db.open_hand_stakes(g)
+    check("the open stakes are summed per game",
+          stakes == {"blackjack": 4_000, "poker": 2_000}, stakes)
+
+    reserve = casino.reserve_for_open_hands(blackjack_stakes=4_000, poker_stakes=2_000)
+    check("the reserve prices the worst case of both games",
+          reserve == blackjack.max_gross(4_000) + poker.max_gross(2_000) == 18_000, reserve)
+    check("a settled blackjack hand cannot need more than the reserve",
+          blackjack.max_gross(4_000) >= blackjack.gross_return(stake=4_000, blackjack=True))
+    check("a settled poker table cannot need more than the reserve",
+          poker.max_gross(2_000) >= 4 * 2_000)
+
+    # /casino balance shows what is spoken for, so an admin can see it first.
+    i = FakeInteraction(alice)
+    await Casino.balance.callback(cog, i)
+    field_names = [field.name for field in i.sent[-1].fields]
+    check("the floor shows the held credits", "Held for open hands" in field_names,
+          field_names)
+    check("the floor still shows the public house balance",
+          "106,000" in (i.sent[-1].description or ""), i.sent[-1].description)
+
+    house = await db.get_casino_balance(g)
+    check("the house holds both stakes on top of its funding", house == 106_000, house)
+
+    # One credit more than the free balance is refused, and nothing moves.
+    i = FakeInteraction(alice)
+    await Casino.withdraw.callback(cog, i, house - reserve + 1)
+    check("a withdrawal into the reserve is refused", "House Reserve" in i.text(), i.text())
+    check("the refusal names the reserve", "18,000 credits" in i.text(), i.text())
+    check("the refusal names the game holding it",
+          "blackjack" in i.text() and "poker" in i.text(), i.text())
+    check("a refused withdrawal moves no credits",
+          await db.get_casino_balance(g) == house, await db.get_casino_balance(g))
+    check("a refused withdrawal writes no ledger row",
+          await db.fetchall("SELECT * FROM transactions WHERE kind='casino_withdraw'") == [])
+
+    # Exactly the free balance is allowed: the house keeps the reserve.
+    i = FakeInteraction(alice)
+    await Casino.withdraw.callback(cog, i, house - reserve)
+    check("a withdrawal that leaves the reserve is allowed",
+          "Casino Withdrawn" in i.text(), i.text())
+    check("the house keeps exactly the reserve",
+          await db.get_casino_balance(g) == reserve, await db.get_casino_balance(g))
+
+    # The worst case then settles out of the reserve, and conservation holds.
+    before = int((await db.find_individual(g, 10))["balance"]) + reserve
+    async with db.transaction():
+        await db.close_blackjack_hand(bj_hand)
+        await casino.finish_wager(
+            db, guild_id=g, wallet=wallet, stake=4_000,
+            gross=blackjack.gross_return(stake=4_000, blackjack=True),
+            outcome="win", kind="individual_blackjack",
+        )
+        await db.close_poker_hand(poker_hand)
+        await casino.finish_wager(
+            db, guild_id=g, wallet=wallet, stake=2_000, gross=poker.max_gross(2_000),
+            outcome="win", kind="individual_poker",
+        )
+    after = int((await db.find_individual(g, 10))["balance"]) + await db.get_casino_balance(g)
+    check("both worst-case wins are paid", after == before, (before, after))
+    check("the reserve is exhausted, not overdrawn",
+          await db.get_casino_balance(g) == 0, await db.get_casino_balance(g))
+    check("no hand is left open",
+          await db.all_open_blackjack_hands() == [] and await db.all_open_poker_hands() == [])
+
+    await db.close()
+
+
 # ---------------------------------------------------------------------------
 # Every gambling command posts in the channel so the table has an audience
 # ---------------------------------------------------------------------------
@@ -789,6 +896,8 @@ def main():
     asyncio.run(public_checks())
     print("-- every casino card keeps the same short shape --")
     card_layout_checks()
+    print("-- a withdrawal keeps the open hands' reserve --")
+    asyncio.run(reserve_checks())
     print(f"\nFAILURES: {len(fails)}")
     if fails:
         for f in fails:

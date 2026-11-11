@@ -1217,7 +1217,16 @@ class Casino(commands.Cog):
                 ephemeral=True,
             )
         house = await self.db.get_casino_balance(interaction.guild_id)
-        embed = gambling_ui.casino_floor(house)
+        stakes = await self.db.open_hand_stakes(interaction.guild_id)
+        embed = gambling_ui.casino_floor(
+            house,
+            reserved=casino.reserve_for_open_hands(
+                blackjack_stakes=stakes["blackjack"], poker_stakes=stakes["poker"]
+            ),
+            reserved_note=casino.reserve_note(
+                blackjack_stakes=stakes["blackjack"], poker_stakes=stakes["poker"]
+            ),
+        )
         await interaction.response.send_message(embed=embed)
 
     @group.command(name="fund", description="[Admin] Credit the Casino so it can pay winning bets.")
@@ -1248,26 +1257,71 @@ class Casino(commands.Cog):
     @app_commands.describe(amount="Credits to take out of the Casino.")
     @admin_only()
     async def withdraw(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, None]):
+        # Read the house, the open hands and the debit inside one transaction:
+        # a hand dealt while this command waited would otherwise raise the
+        # reserve after the check and drain the credits it needs.
+        #
+        # Two different refusals, because they ask for different actions:
+        # ``short`` means the house does not hold the credits at all, ``held``
+        # means it does but they are owed to a hand still in play.
+        blocked = None
+        after = 0
         try:
             async with self.db.transaction():
-                after = await self.db.debit_casino(interaction.guild_id, amount)
-                await self.db.log_tx(
-                    guild_id=interaction.guild_id,
-                    kind="casino_withdraw",
-                    account_type="casino",
-                    account_id=interaction.guild_id,
-                    account_name="The Casino",
-                    amount=-amount,
-                    balance_after=after,
-                    actor_id=interaction.user.id,
-                    note="Admin withdrew from the Casino",
+                stakes = await self.db.open_hand_stakes(interaction.guild_id)
+                reserve = casino.reserve_for_open_hands(
+                    blackjack_stakes=stakes["blackjack"], poker_stakes=stakes["poker"]
                 )
+                house = await self.db.get_casino_balance(interaction.guild_id)
+                available = house - reserve
+                if amount > house:
+                    blocked = ("short", house, reserve, available, stakes)
+                elif amount > available:
+                    blocked = ("held", house, reserve, available, stakes)
+                else:
+                    after = await self.db.debit_casino(interaction.guild_id, amount)
+                    await self.db.log_tx(
+                        guild_id=interaction.guild_id,
+                        kind="casino_withdraw",
+                        account_type="casino",
+                        account_id=interaction.guild_id,
+                        account_name="The Casino",
+                        amount=-amount,
+                        balance_after=after,
+                        actor_id=interaction.user.id,
+                        note="Admin withdrew from the Casino",
+                    )
         except InsufficientFunds:
+            # Defensive: the guarded debit above should already have refused it.
             house = await self.db.get_casino_balance(interaction.guild_id)
             return await interaction.response.send_message(
                 embed=embeds.error(
                     "Insufficient Funds",
                     f"The Casino holds **{money(house)}**. Nothing was withdrawn.",
+                ),
+                ephemeral=True,
+            )
+        if blocked is not None:
+            kind_of_refusal, house, reserve, available, stakes = blocked
+            if kind_of_refusal == "short":
+                return await interaction.response.send_message(
+                    embed=embeds.error(
+                        "Insufficient Funds",
+                        f"The Casino holds **{money(house)}**. Nothing was withdrawn.",
+                    ),
+                    ephemeral=True,
+                )
+            note = casino.reserve_note(
+                blackjack_stakes=stakes["blackjack"], poker_stakes=stakes["poker"]
+            )
+            held = f" ({note})" if note else ""
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    "House Reserve",
+                    f"The Casino holds **{money(house)}**, but **{money(reserve)}** is "
+                    f"reserved for open hands{held}.\n"
+                    f"At most **{money(max(0, available))}** can be withdrawn until "
+                    "those hands are settled.",
                 ),
                 ephemeral=True,
             )

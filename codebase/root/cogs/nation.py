@@ -20,6 +20,7 @@ import embeds
 from checks import admin_only
 # BUGFIX: this import was missing, so /nation request raised NameError at runtime.
 from creation import creation_bonus, found_account, submit_creation_request
+from database import NameTaken
 from payouts import nation_payout
 from utils import nation_autocomplete, money
 
@@ -104,10 +105,11 @@ class Nation(commands.Cog):
                 leader.id if leader else None, interaction.user.id,
                 note="Founded directly by an administrator",
             )
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, NameTaken):
             # A petition approval can win the name race between the check
             # above and the insert. Its status flip and our insert share the
-            # database lock, so this is the same one-row outcome.
+            # database lock, so this is the same one-row outcome. NameTaken is
+            # the case-insensitive clash (``Foo`` vs ``foo``).
             return await interaction.response.send_message(
                 embed=embeds.error("Name Taken", f"A nation named **{name}** already exists."),
                 ephemeral=True,
@@ -158,13 +160,21 @@ class Nation(commands.Cog):
                     ephemeral=True,
                 )
 
-        async with self.db.transaction():
-            await self.db.rename_account("nation", row["id"], new_name)
-            await self.db.log_tx(
-                guild_id=interaction.guild_id, kind="nation_rename",
-                account_type="nation", account_id=row["id"], account_name=new_name,
-                balance_after=int(row["balance"]), actor_id=interaction.user.id,
-                note=f"Renamed from {row['name']}",
+        try:
+            async with self.db.transaction():
+                await self.db.rename_account("nation", row["id"], new_name)
+                await self.db.log_tx(
+                    guild_id=interaction.guild_id, kind="nation_rename",
+                    account_type="nation", account_id=row["id"], account_name=new_name,
+                    balance_after=int(row["balance"]), actor_id=interaction.user.id,
+                    note=f"Renamed from {row['name']}",
+                )
+        except NameTaken:
+            # The clash check above is feedback only; a rename that lands in the
+            # same instant as another one is refused here, with nothing written.
+            return await interaction.response.send_message(
+                embed=embeds.error("Name Taken", f"A nation named **{new_name}** already exists."),
+                ephemeral=True,
             )
         await interaction.response.send_message(
             embed=embeds.success(

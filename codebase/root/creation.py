@@ -20,6 +20,7 @@ import discord
 
 import config
 import embeds
+from database import NameTaken
 from utils import money
 
 
@@ -282,12 +283,13 @@ class CreationApprovalView(discord.ui.View):
                         db, row["guild_id"], kind, name, leader_id, interaction.user.id,
                         note=f"Approved petition #{self.creation_id} · creation bonus {bonus}",
                     )
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, NameTaken):
             # A direct /nation add or /kingdom add won the name race between our
-            # look-up and our insert. The founding transaction rolled back, so
-            # close the petition explicitly in a fresh transaction. Leaving it
-            # pending would make the message say "Name Taken" while the row
-            # stayed claimable forever.
+            # look-up and our insert (NameTaken covers the case-insensitive
+            # clash, IntegrityError the exact one). The founding transaction
+            # rolled back, so close the petition explicitly in a fresh
+            # transaction. Leaving it pending would make the message say "Name
+            # Taken" while the row stayed claimable forever.
             async with db.transaction():
                 marked = await db.claim_pending_creation(self.creation_id, "failed")
             if not marked:

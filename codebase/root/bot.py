@@ -117,6 +117,36 @@ class RoyalCourt(commands.Bot):
     async def setup_hook(self) -> None:
         await self.db.connect()
 
+        # Cheap corruption alarm at boot: `quick_check` reports a broken page or
+        # b-tree immediately instead of letting the first odd query explain it.
+        # It never stops the bot - a warning the owner can act on beats a bot
+        # that refuses to start.
+        try:
+            verdict = await self.db.quick_check()
+        except Exception:  # pragma: no cover - never block a login
+            logger.exception("Could not run PRAGMA quick_check.")
+        else:
+            if verdict == "ok":
+                logger.info("Database quick_check: ok")
+            else:
+                logger.error("Database quick_check reported: %s", verdict)
+
+        # One line of operational context: the numbers that explain a slow read
+        # or a huge WAL later on ("is this the live database, or a stale copy?").
+        try:
+            size = Path(DB_PATH).stat().st_size
+        except OSError:
+            size = 0
+        try:
+            wal = Path(DB_PATH + "-wal").stat().st_size
+        except OSError:
+            wal = 0
+        if size:
+            logger.info(
+                "Database %s (%.1f MiB) · WAL %.1f MiB · %d readers",
+                DB_PATH, size / 1048576, wal / 1048576, self.db.read_pool_size,
+            )
+
         # Seed the Royal Shop catalog (idempotent; preserves admin edits).
         await seed_shop(self.db)
 

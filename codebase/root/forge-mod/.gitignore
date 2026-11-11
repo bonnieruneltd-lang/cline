@@ -1,0 +1,11 @@
+# Gradle / Forge build output
+build/
+.gradle/
+run/
+*.class
+
+# Built mod jar (the wrapper jar in gradle/wrapper/ is kept)
+royalcourt-redeem-*.jar
+
+# Local config (contains the API token)
+config/

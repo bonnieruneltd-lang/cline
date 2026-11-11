@@ -1322,6 +1322,26 @@ it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
 
+### 2026-11-11 — Repository resynced to the live build (working tree == host)
+
+**What was wrong.** The checkout was missing the build that has been live since
+2026-11-10 16:46: `casino.py`, `database.py`, `creation.py`, `gambling_ui.py`,
+`bot.py`, `cogs/games.py`, `cogs/nation.py`, `cogs/kingdom.py`, three `checks/`
+files and the whole `forge-mod/` source tree were older or absent, so the
+repository would have re-introduced the drained-house, case-duplicate-name and
+missing-index defects documented in the 2026-11-10 entry below.
+
+**What changed.** The eleven differing files and the 18-file `forge-mod/` tree
+(the built jar and `build/` stay excluded, as `forge-mod/.gitignore` says) were
+pulled from the host; every file is SHA-256 identical to the deployed copy. A
+full tree comparison now reports only `daily_guide.md` (generated) and
+`forge-mod/royalcourt-redeem-1.0.0.jar` (built) as host-only.
+
+**Verified.** `checks/run_all.py` **24/24** (including the newer
+`check_casino.py`, `check_database.py` and `check_creation_race.py` cases),
+`compileall` and `pyflakes` clean. No code was changed relative to production,
+so no upload or restart is needed for this resync.
+
 ### 2026-11-11 — Personas on Google AI Studio, the guide on DeepSeek, Cline as the backup (uploaded; **restart pending**)
 
 **What changed.** All chat AIs (Gilbert + Albert, and `/poker`'s bot names) moved

@@ -323,6 +323,47 @@ async def main():
     )
     check("the transcript index exists after migration", legacy_index is not None)
 
+    # --- the name indexes are real, and the planner uses them --------------
+    # Every lookup resolves a name with COLLATE NOCASE, which the BINARY
+    # UNIQUE (guild_id, name) index cannot serve; without these the leaderboards
+    # and every /nation show scan the table.
+    for table, index in (
+        ("nations", "idx_nations_name_nocase"),
+        ("kingdoms", "idx_kingdoms_name_nocase"),
+        ("nations", "idx_nations_balance"),
+        ("kingdoms", "idx_kingdoms_balance"),
+        ("blackjack_hands", "idx_blackjack_guild"),
+        ("poker_hands", "idx_poker_guild"),
+    ):
+        names = {row["name"] for row in await db.fetchall(f"PRAGMA index_list('{table}')")}
+        check(f"{index} exists", index in names, sorted(names))
+
+    plan = await db.fetchall(
+        """EXPLAIN QUERY PLAN
+           SELECT * FROM nations WHERE guild_id = ? AND name = ? COLLATE NOCASE""",
+        (g, "Aurum"),
+    )
+    used = " ".join(str(row["detail"]) for row in plan)
+    check("a nation name lookup uses the NOCASE index",
+          "idx_nations_name_nocase" in used, used)
+
+    plan = await db.fetchall(
+        """EXPLAIN QUERY PLAN
+           SELECT name, balance FROM kingdoms WHERE guild_id = ?
+           ORDER BY balance DESC, name COLLATE NOCASE ASC""",
+        (g,),
+    )
+    used = " ".join(str(row["detail"]) for row in plan)
+    check("the kingdom leaderboard uses its balance index",
+          "idx_kingdoms_balance" in used, used)
+
+    # --- the boot health probe and the clean-shutdown checkpoint -----------
+    check("PRAGMA quick_check reports ok", await db.quick_check() == "ok",
+          await db.quick_check())
+    check("open hands reserve nothing on a quiet house",
+          await db.open_hand_stakes(g) == {"blackjack": 0, "poker": 0},
+          await db.open_hand_stakes(g))
+
     await db.close()
     print("\nFAILURES:", len(fails))
     for f in fails:
