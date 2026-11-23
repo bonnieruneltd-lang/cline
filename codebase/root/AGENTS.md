@@ -128,42 +128,48 @@ main `.db` alone is a stale snapshot (on 2026-11-06 it showed 681 of the 685
 
 ### Last known live state
 
-2026-11-11 (**personas on Google AI Studio, the guide on DeepSeek, Cline as the
-backup; surface unchanged at 119 commands / 17 cogs**). Working tree green:
-`checks/run_all.py` **24/24**, `compileall`/`pyflakes` clean. **Uploaded but not
-yet loaded** — the process must be restarted from the hosting panel for the new
-`gilbert/ai.py` fallback path and the `.env` provider switch to take effect.
+2026-11-23 (**Cline key is the primary AI, free `:free` models for the personas
+and the summary, every earlier key kept as a numbered backup; surface unchanged
+at 119 commands / 17 cogs**). Working tree green: `checks/run_all.py` **24/24**,
+`compileall`/`pyflakes` clean. **Checkout only — the live `.env` still carries
+the 2026-11-11 DeepSeek/Google settings until the lines in README section 12
+("2026-11-23") are written on the host; SFTP was unreachable from this session
+(TCP to 15.235.11.50:2022 resets before the banner).**
 
-- Personas (`/contract` negotiations, `/poker` bot names): DeepSeek's own API,
-  `https://api.deepseek.com`, `CHATBOT_MODEL=deepseek-v4-pro` (the legacy
-  persona key from `AI_API_KEY`), 0.75, 16,000 tokens, 240 s. The owner asked to
-  switch back to DeepSeek after a short Cline trial: **13.9 s** on the real
-  persona prompt and correct on public benefit, the 1/1 quota and a
-  400k-vs-1M treasury. `deepseek-chat` is the 3.8 s alternative if speed matters
-  more; do not put the guide back on the pro tier (see below).
-- Daily guide: DeepSeek `https://api.deepseek.com` with its own
-  `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-chat`, 0.25, 16,000,
-  `DAILY_GUIDE_TIMEOUT=600`. **Never put the guide back on the pro tier without
-  raising the timeout**: `deepseek-v4-pro` needed 206 s for 12k characters (and
-  ~229 s of the 240 s persona budget in production), while the flash tier does
-  the 59.6k-char worst case in 17 s. A guide that starts with
-  `_Generated … without the AI model._` means the call failed or timed out — it
-  does **not** mean the key is dead.
-- Backup for **either** key: `CHATBOT_FALLBACK_API_URL=https://generativelanguage.googleapis.com/v1beta/openai`
-  with the Google Studio key, `CHATBOT_FALLBACK_MODEL=gemini-3.5-flash` and
-  `DAILY_GUIDE_FALLBACK_MODEL=gemini-3.5-flash` (5–9 s, other provider).
-- `GilbertAI.complete()` now retries the whole call once on the backup after any
-  primary failure (401/402/429/5xx/timeout/open breaker) — that is what stops a
-  dry free key from posting the canned persona line for the rest of the day.
-  Keep `CHATBOT_FALLBACK_*` set; do not "simplify" it away.
-- Never print or commit the keys. They live in the live `.env` only; this
-  checkout keeps them out (see `.gitignore`).
+- `gilbert/ai.py` now has an ordered **key chain**, not one primary + one
+  backup: `CHATBOT_*`, then `CHATBOT_FALLBACK_*` (tier 1), then
+  `CHATBOT_FALLBACK_2_*` … `_9_*`, then a populated legacy `AI_API_KEY` as the
+  last resort (`CHATBOT_LEGACY_FALLBACK=false` disables that). A rejected key
+  (401/402/403), a 429, a 5xx, a timeout or an open breaker moves to the next
+  key. Never delete the older keys; they are the backup path.
+- Each tier may carry `_MODELS=a,b,c`. A gateway response of `404 model not
+  found` / `400 model not supported` — or an empty reply — moves to the **next
+  model on the same key**; any other failure moves to the next key, so a timeout
+  can never multiply into one call per model. `_LAST_FAILURE` is a
+  `ContextVar`, not an instance attribute — never make it shared state.
+- On the Cline gateway (`https://api.cline.bot/api/v1`) the measured free pool
+  `FREE_CLINE_MODELS` (`dots-studio/dots-3-note-preview:free` 6.2 s,
+  `baidu/ernie-5.5-flash-preview:free` 8.5 s, `nvidia/nemotron-3.5-super-vl:free`
+  10.8 s, `nvidia/nemotron-3-ultra-550b-a55b:free` 20.3 s, plus two short
+  writers) is appended automatically; `CHATBOT_FREE_FALLBACKS=false` disables
+  it. A Cline key with no `CHATBOT_MODEL` defaults to the first free model, not
+  `deepseek-chat`. `inclusionai/ling-3.2-flash:free` and the Gemma free models
+  are **404 model not supported** on this key; do not add them back.
+- The daily guide (the summary) reads `DAILY_GUIDE_MODELS`,
+  `DAILY_GUIDE_FALLBACK_MODELS` and `DAILY_GUIDE_FREE_FALLBACKS`, so it runs on
+  the free models first. Keep `DAILY_GUIDE_TIMEOUT=600`: a guide that starts
+  with `_Generated … without the AI model._` failed or timed out; it does not
+  mean the key is dead.
 - **Diagnose the error code, not the vibes** before "fixing" a key: 401/403 = the
   key, 402 = the balance, 404 = the model id (e.g. `gemini-2.5-*` is retired for
   new accounts), 429 = quota or rate limit (the Google Pro tier has **no** quota
-  on a free key, so a Pro-model test always looks dead), 503 = the provider is
-  busy. The full measured matrix lives in `gilbert/README.md` ("Choosing a model
-  against a live key").
+  on a free key, so a Pro-model test always looks dead), 400 + `model not
+  supported` = the catalogue lists a model this key cannot run, 503 = the
+  provider is busy. The full measured matrix lives in `gilbert/README.md`
+  ("Choosing a model against a live key").
+- Never print or commit the keys. They live in the live `.env` only; this
+  checkout keeps them out (see `.gitignore`). The Tavily key is only for
+  `gilbert/lookup.py` (`TAVILY_API_KEY`, `LOOKUP_ENABLED=true`).
 
 2026-11-10 (**casino withdrawal reserve, case-insensitive names, lookup
 indexes; surface unchanged at 119 commands / 17 cogs / 24 checks**). Uploaded

@@ -353,6 +353,57 @@ with patch.dict(os.environ, {
           captured.get("fallback_model") == "cline-pass/deepseek-v4-pro", captured)
     check("the model's guide is returned as-is", out == "GUIDE", out)
 
+# The summary may offer several models, including the gateway's free ":free"
+# ones, so a rejected paid model does not throw away the whole daily document.
+with patch.dict(os.environ, {
+    "DAILY_GUIDE_MODELS": "dots-studio/dots-3-note-preview:free, baidu/ernie-5.5-flash-preview:free ,",
+    "DAILY_GUIDE_FALLBACK_MODELS": "nvidia/nemotron-3.5-super-vl:free",
+    "DAILY_GUIDE_FREE_FALLBACKS": "false",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("guide model list from env",
+          ds.guide_models.startswith("dots-studio/"), ds.guide_models)
+    check("guide fallback model list from env",
+          ds.guide_fallback_models == "nvidia/nemotron-3.5-super-vl:free",
+          ds.guide_fallback_models)
+    check("guide free pool can be switched off",
+          ds.guide_free_fallbacks is False, ds.guide_free_fallbacks)
+
+    captured = {}
+
+    class CaptureAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.enabled = True
+
+        async def complete(self, messages):
+            return "GUIDE"
+
+    original_ai = daily_sync.GilbertAI
+    daily_sync.GilbertAI = CaptureAI
+    try:
+        asyncio.run(ds.generate_guide(source))
+    finally:
+        daily_sync.GilbertAI = original_ai
+    check("the guide hands its model list to the client",
+          captured.get("models")
+          == ["dots-studio/dots-3-note-preview:free", "baidu/ernie-5.5-flash-preview:free"],
+          captured.get("models"))
+    check("the guide hands its fallback model list to the client",
+          captured.get("fallback_models") == ["nvidia/nemotron-3.5-super-vl:free"],
+          captured.get("fallback_models"))
+    check("the guide passes its free-pool switch through",
+          captured.get("use_free_fallbacks") is False, captured.get("use_free_fallbacks"))
+
+with patch.dict(os.environ, {
+    "DAILY_GUIDE_MODELS": "", "DAILY_GUIDE_FALLBACK_MODELS": "", "DAILY_GUIDE_FREE_FALLBACKS": "",
+}, clear=False):
+    ds = daily_sync.DailySync(FakeBot(None))
+    check("no guide model list means the primary only",
+          ds.guide_models == "" and ds.guide_fallback_models == "",
+          (ds.guide_models, ds.guide_fallback_models))
+    check("the guide free pool defaults on", ds.guide_free_fallbacks is True)
+
 with patch.dict(os.environ, {
     "DAILY_GUIDE_API_URL": "", "DAILY_GUIDE_API_KEY": "", "DAILY_GUIDE_FALLBACK_MODEL": "",
 }, clear=False):

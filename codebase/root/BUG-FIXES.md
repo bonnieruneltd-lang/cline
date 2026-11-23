@@ -26,6 +26,53 @@ Test:    the check that proves it (see "Verification" at the end).
 
 ---
 
+## The AI chain gave up on the second key and on rejected free models — 2026-11-23
+
+### A dead key behind a dead primary still silenced the personas
+
+**Symptom.** After the owner's primary key ran dry or was rate-limited, the
+personas posted their "my line to the records has gone down" line even though
+two other working keys sat in `.env`. On the Cline gateway the opposite also
+happened: the model name was listed by `GET /api/v1/models` but a call answered
+`404 {"error":"model not supported"}`, and the client treated that as a dead
+key, so a perfectly usable free model was never tried.
+
+**Cause.** `gilbert/ai.py` supported exactly one primary and one
+`CHATBOT_FALLBACK_*` endpoint. A second backup key could not be configured, and
+a model-level rejection (400/404/422) was indistinguishable from a key-level
+failure (401/402/429/5xx) because `_complete_with()` only returned `None`.
+
+**Impact.** The personas and the daily summary fell back to the canned line
+while working keys sat unused; the owner's new primary/provider order could not
+be expressed at all.
+
+**Fix.**
+- `_Provider` now carries an ordered `models` tuple (`candidates`), and
+  `_fallback_providers()` builds `CHATBOT_FALLBACK_*`, then
+  `CHATBOT_FALLBACK_2_*` … `_9_*`, then a populated legacy `AI_API_KEY`
+  (`_legacy_provider()`, `CHATBOT_LEGACY_FALLBACK=false` disables it).
+- `_failure_reason()` classifies a failed response and stores it in the
+  `_LAST_FAILURE` **ContextVar**. `complete()` walks the key chain and, for a
+  rejected model or an empty reply, tries the next model on the same key; every
+  other failure moves to the next key, so a timeout cannot multiply into one
+  call per model.
+- `FREE_CLINE_MODELS` is the measured `:free` pool, appended automatically on
+  the Cline gateway (`CHATBOT_FREE_FALLBACKS`), and a Cline key with no model
+  defaults to `dots-studio/dots-3-note-preview:free`.
+- `DailySync` reads `DAILY_GUIDE_MODELS`, `DAILY_GUIDE_FALLBACK_MODELS` and
+  `DAILY_GUIDE_FREE_FALLBACKS` so the summary uses the free models first.
+- `provider_hint()` recognises `400/422 model not supported` as a model problem
+  and no longer opens the breaker for it.
+
+**Test.** `checks/check_gilbert.py` (numbered tiers, model-list failover, free
+pool on/off, Cline default model, dead-key skip) and
+`checks/check_daily_sync.py` (guide model lists and the free-pool switch). A
+live call with the supplied key moved from an unserved `ling-3.2-flash:free` to
+`baidu/ernie-5.5-flash-preview:free` and returned **OK**; a dead primary URL
+returned **OK** from the Cline backup.
+
+---
+
 ## The personas answered a meta-question out of character — 2026-11-11
 
 ### Gilbert greeted the requester with his own name, named a model, and "closed" a case by talking

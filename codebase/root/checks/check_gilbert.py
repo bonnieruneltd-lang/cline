@@ -7,8 +7,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
 from gilbert.ai import (  # noqa: E402
-    GilbertAI, clean_reply, looks_out_of_character, provider_hint, reply_text,
+    FREE_CLINE_MODELS,
+    GilbertAI,
+    clean_reply,
+    looks_out_of_character,
+    provider_hint,
+    reply_text,
 )
+import gilbert.ai as ai_module  # noqa: E402
 from gilbert import lookup, memory  # noqa: E402
 from gilbert.prompt import (  # noqa: E402
     GILBERT_SYSTEM_PROMPT,
@@ -327,6 +333,168 @@ check("the backup model is the one used",
 check("a healthy primary never calls the backup",
       up_calls == [("https://primary.test/v1", "primary-model")], up_calls)
 check("no backup configured still returns None", lonely_reply is None, lonely_reply)
+
+# --- an ordered key chain and the free ":free" model pool -------------------
+# More than one backup key can sit behind the primary: FALLBACK_* is tier 1 and
+# FALLBACK_2_*..FALLBACK_9_* follow. Each key may list several models; only a
+# rejected model stays on the same key, everything else moves down the chain.
+_CHAIN_ENV = {
+    "CHATBOT_API_URL": "https://primary.test/v1",
+    "CHATBOT_API_KEY": "pk",
+    "CHATBOT_MODEL": "primary-model",
+    "CHATBOT_MODELS": "",
+    "CHATBOT_FREE_FALLBACKS": "0",
+    "CHATBOT_FALLBACK_API_URL": "https://backup.test/v1",
+    "CHATBOT_FALLBACK_API_KEY": "bk",
+    "CHATBOT_FALLBACK_MODEL": "backup-model",
+    "CHATBOT_FALLBACK_2_API_URL": "https://second.test/v1",
+    "CHATBOT_FALLBACK_2_API_KEY": "sk",
+    "CHATBOT_FALLBACK_2_MODEL": "second-model",
+    "AI_API_URL": "",
+    "AI_API_KEY": "",
+    "AI_MODEL": "",
+}
+with patch.dict(os.environ, _CHAIN_ENV, clear=False):
+    ai = GilbertAI()
+    check("numbered fallback keys are ordered",
+          [tier.base_url for tier in ai.fallbacks]
+          == ["https://backup.test/v1", "https://second.test/v1"], ai.fallbacks)
+    check("the whole chain is primary + every backup", len(ai.chain) == 3, len(ai.chain))
+    check(".fallback still names the first backup", ai.fallback.base_url == "https://backup.test/v1")
+
+# Switching to CHATBOT_* must not throw away the still-working legacy AI_* key:
+# it becomes the final backup automatically.
+_LEGACY_ENV = {
+    **_CHAIN_ENV,
+    "AI_API_URL": "https://api.deepseek.com",
+    "AI_API_KEY": "legacy-deepseek-key",
+    "AI_MODEL": "deepseek-v4-pro",
+    "CHATBOT_LEGACY_FALLBACK": "",
+}
+with patch.dict(os.environ, _LEGACY_ENV, clear=False):
+    ai = GilbertAI()
+    check("the legacy AI_* key joins the chain last",
+          [tier.base_url for tier in ai.fallbacks]
+          == ["https://backup.test/v1", "https://second.test/v1", "https://api.deepseek.com"],
+          ai.fallbacks)
+    check("the legacy model is kept",
+          ai.fallbacks[-1].model == "deepseek-v4-pro", ai.fallbacks[-1].model)
+    check("the legacy key is kept",
+          ai.fallbacks[-1].api_key == "legacy-deepseek-key")
+
+with patch.dict(os.environ, {**_LEGACY_ENV, "CHATBOT_LEGACY_FALLBACK": "false"}, clear=False):
+    ai = GilbertAI()
+    check("CHATBOT_LEGACY_FALLBACK=false drops the legacy tier",
+          [tier.base_url for tier in ai.fallbacks]
+          == ["https://backup.test/v1", "https://second.test/v1"], ai.fallbacks)
+
+with patch.dict(os.environ, {
+    **_CHAIN_ENV,
+    "CHATBOT_API_URL": "https://api.cline.bot/api/v1",
+    "CHATBOT_MODEL": "paid-model",
+    "CHATBOT_FREE_FALLBACKS": "",
+}, clear=False):
+    ai = GilbertAI()
+    check("a Cline key keeps the paid model first", ai.model == "paid-model", ai.model)
+    check("the free pool follows it, in order",
+          ai.models[1:] == FREE_CLINE_MODELS, ai.models)
+    check("the free pool is measured free models",
+          all(name.endswith(":free") or name == "openrouter/free" for name in FREE_CLINE_MODELS))
+
+with patch.dict(os.environ, {
+    **_CHAIN_ENV,
+    "CHATBOT_API_URL": "https://api.cline.bot/api/v1",
+    "CHATBOT_MODEL": "paid-model",
+    "CHATBOT_FREE_FALLBACKS": "false",
+}, clear=False):
+    ai = GilbertAI()
+    check("CHATBOT_FREE_FALLBACKS=false keeps one model", ai.models == ("paid-model",), ai.models)
+
+with patch.dict(os.environ, {
+    **_CHAIN_ENV,
+    "CHATBOT_API_URL": "https://api.cline.bot/api/v1",
+    "CHATBOT_MODEL": "",
+    "CHATBOT_FREE_FALLBACKS": "",
+}, clear=False):
+    ai = GilbertAI()
+    check("a Cline key with no model defaults to a free one",
+          ai.model == FREE_CLINE_MODELS[0], ai.model)
+
+
+async def _chain_routing():
+    calls = []
+
+    async def model_rejected(self, base_url, api_key, model, messages):
+        calls.append((base_url, model))
+        if model == "paid-model":
+            ai_module._LAST_FAILURE.set("model")
+            return None
+        return "free says hi"
+
+    with patch.dict(os.environ, {
+        **_CHAIN_ENV,
+        "CHATBOT_API_URL": "https://api.cline.bot/api/v1",
+        "CHATBOT_MODEL": "paid-model",
+        "CHATBOT_FREE_FALLBACKS": "",
+    }, clear=False):
+        with patch.object(GilbertAI, "_complete_with", model_rejected):
+            rejected = GilbertAI()
+            rejected_reply = await rejected.complete([{"role": "user", "content": "x"}])
+        rejected_calls = list(calls)
+        calls.clear()
+
+        async def key_down(self, base_url, api_key, model, messages):
+            calls.append((base_url, model))
+            ai_module._LAST_FAILURE.set("auth")
+            return None
+
+        with patch.object(GilbertAI, "_complete_with", key_down):
+            dead = GilbertAI()
+            dead_reply = await dead.complete([{"role": "user", "content": "x"}])
+        dead_calls = list(calls)
+        calls.clear()
+
+        async def empty_first(self, base_url, api_key, model, messages):
+            calls.append((base_url, model))
+            if model == "paid-model":
+                ai_module._LAST_FAILURE.set("empty")
+                return None
+            return "free says hi"
+
+        with patch.object(GilbertAI, "_complete_with", empty_first):
+            empty = GilbertAI()
+            empty_reply = await empty.complete([{"role": "user", "content": "x"}])
+        empty_calls = list(calls)
+    return (
+        rejected_reply,
+        rejected_calls,
+        dead_reply,
+        dead_calls,
+        empty_reply,
+        empty_calls,
+    )
+
+
+(
+    rejected_reply,
+    rejected_calls,
+    dead_reply,
+    dead_calls,
+    empty_reply,
+    empty_calls,
+) = asyncio.run(_chain_routing())
+check("a rejected model tries the next free model", rejected_reply == "free says hi", rejected_reply)
+check("the paid model is tried before the free pool",
+      rejected_calls[0] == ("https://api.cline.bot/api/v1", "paid-model"), rejected_calls)
+check("the next attempt is the first free model",
+      len(rejected_calls) == 2 and rejected_calls[1][1] == FREE_CLINE_MODELS[0], rejected_calls)
+check("a dead key returns nothing when every key is dead", dead_reply is None, dead_reply)
+check("a dead key skips that key's remaining models",
+      [model for _, model in dead_calls]
+      == ["paid-model", "backup-model", "second-model"], dead_calls)
+check("an empty reply tries the next free model", empty_reply == "free says hi", empty_reply)
+check("the empty model is not retried on the same key",
+      len(empty_calls) == 2 and empty_calls[1][1] == FREE_CLINE_MODELS[0], empty_calls)
 
 # --- live lookup decision, formatting and guards ---------------------------
 check("platform note names 1.20.1", "1.20.1" in lookup.platform_note())

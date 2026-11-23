@@ -201,6 +201,9 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `CHATBOT_API_KEY` | Chat-bot key shared by Gilbert + Albert (legacy `AI_API_KEY` still works) |
 | `CHATBOT_API_URL` | Chat-bot OpenAI-compatible base URL (legacy `AI_API_URL`) |
 | `CHATBOT_MODEL` | Chat-bot model name (legacy `AI_MODEL`) |
+| `CHATBOT_MODELS` | Extra models for the primary key, comma separated; tried in order when the gateway rejects the previous model |
+| `CHATBOT_FREE_FALLBACKS` | Default `true` on the Cline gateway: append the measured `:free` models as last-resort models (`false` turns it off) |
+| `CHATBOT_LEGACY_FALLBACK` | Default `true`: a populated legacy `AI_API_KEY` becomes the final backup key instead of being ignored |
 | `CHATBOT_TIMEOUT` | Chat-bot request timeout in seconds (legacy `AI_TIMEOUT`) |
 | `CHATBOT_TEMPERATURE` | Chat-bot sampling temperature (legacy `AI_TEMPERATURE`) |
 | `CHATBOT_MAX_TOKENS` | Chat-bot reply token limit (legacy `AI_MAX_TOKENS`) |
@@ -208,7 +211,11 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `CHATBOT_RETRIES` | Retries for a 429/5xx chat-bot reply (default 2, clamped 0-4) |
 | `CHATBOT_FALLBACK_API_URL` | Backup chat-bot base URL used when the primary gives no reply |
 | `CHATBOT_FALLBACK_API_KEY` | Backup chat-bot key (the Google AI Studio key on the live deployment) |
-| `CHATBOT_FALLBACK_MODEL` | Backup model; for the personas `gemini-3.5-flash` |
+| `CHATBOT_FALLBACK_MODEL` | Model for backup tier 1 (empty inherits the primary model on the same provider, else that provider's default) |
+| `CHATBOT_FALLBACK_MODELS` | Extra models for backup tier 1, comma separated |
+| `CHATBOT_FALLBACK_2_API_URL` … `CHATBOT_FALLBACK_9_API_URL` | Further backup keys, tried in numeric order |
+| `CHATBOT_FALLBACK_2_API_KEY` … `CHATBOT_FALLBACK_9_API_KEY` | Key for each numbered backup tier |
+| `CHATBOT_FALLBACK_2_MODEL` / `_MODELS` … | Model(s) for each numbered backup tier |
 | `API_TOKEN` | Shared bearer token for the Forge mod |
 | `API_HOST` | HTTP bind address |
 | `API_PORT` | HTTP port |
@@ -239,9 +246,12 @@ Set these in the hosting panel or in `.env`. Values are never committed.
 | `DAILY_GUIDE_MAX_CHARS` | Max guide length returned (default 24000) |
 | `DAILY_GUIDE_LANGUAGE` | Language the guide is written in (default English) |
 | `DAILY_GUIDE_MODEL` | Model for the guide alone (default: `CHATBOT_MODEL`) |
+| `DAILY_GUIDE_MODELS` | Extra guide models, comma separated (on Cline: the free `:free` ones) |
 | `DAILY_GUIDE_API_URL` | Base URL for the guide alone (default: `CHATBOT_API_URL`) |
 | `DAILY_GUIDE_API_KEY` | Key for the guide alone (default: `CHATBOT_API_KEY`) |
 | `DAILY_GUIDE_FALLBACK_MODEL` | Backup model for the guide only (default: `CHATBOT_FALLBACK_MODEL`) |
+| `DAILY_GUIDE_FALLBACK_MODELS` | Extra models for the guide's first backup key |
+| `DAILY_GUIDE_FREE_FALLBACKS` | Default `true`: append the gateway's `:free` models to the guide |
 | `DAILY_GUIDE_TIMEOUT` | Guide request timeout in seconds (default: `CHATBOT_TIMEOUT`, 0 = shared) |
 | `DAILY_GUIDE_TEMPERATURE` | Guide temperature, clamped 0–1 (default 0.25) |
 | `DAILY_GUIDE_MAX_TOKENS` | Guide output token budget (default 12000) |
@@ -258,9 +268,9 @@ Both personas and the guide speak the same OpenAI-compatible protocol
 
 | Role | Live setting | Why |
 |---|---|---|
-| Gilbert + Albert | `CHATBOT_API_URL=https://api.deepseek.com`, `CHATBOT_MODEL=deepseek-v4-pro`, 0.75, 16k, 240 s | Back on DeepSeek as the owner asked, on the pro tier: **13.9 s** on the real persona prompt and correct on the public-benefit rule, the 1/1 nation quota and a 400k-vs-1M treasury. `deepseek-chat` is the 3.8 s alternative if speed ever wins |
-| Daily guide | `DAILY_GUIDE_API_URL=https://api.deepseek.com` + its own `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_MODEL=deepseek-chat`, `DAILY_GUIDE_TIMEOUT=600`, 0.25, 16k | A separate key means it can run dry without silencing the personas; the *flash* tier wrote the same 12k-char document in 16 s where `deepseek-v4-pro` took 206 s (inside the 240 s persona timeout by luck, not by design) |
-| Backup (both) | `CHATBOT_FALLBACK_API_URL=https://generativelanguage.googleapis.com/v1beta/openai`, the Google Studio key, `CHATBOT_FALLBACK_MODEL=gemini-3.5-flash`, `DAILY_GUIDE_FALLBACK_MODEL=gemini-3.5-flash` | A failed DeepSeek call retries once on the other provider instead of posting the canned line; 3.5-flash answers in 5–9 s |
+| Gilbert + Albert | `CHATBOT_API_URL=https://api.cline.bot/api/v1`, the owner's Cline key, `CHATBOT_MODEL=dots-studio/dots-3-note-preview:free` (6.2 s), `CHATBOT_MODELS=baidu/ernie-5.5-flash-preview:free,nvidia/nemotron-3.5-super-vl:free,…`, 0.75, 16k, 240 s | The Cline key is the primary; its catalogue labels the free models `:free` and every one below answered the real persona prompt correctly. `dots` is the fastest at 6.2 s, `ernie` 8.5 s, `nemotron-3.5` 10.8 s. The `CHATBOT_FALLBACK_*` tiers keep the earlier keys as backups |
+| Daily guide | `DAILY_GUIDE_API_URL=https://api.cline.bot/api/v1` on the same Cline key, `DAILY_GUIDE_MODEL=dots-studio/dots-3-note-preview:free`, `DAILY_GUIDE_MODELS=` the other free models, `DAILY_GUIDE_TIMEOUT=600`, 0.25, 16k | The summary runs on the free models first; a rejected free model moves to the next one, and only a dead key moves to the DeepSeek/Google backup |
+| Backup (both) | the existing `CHATBOT_FALLBACK_*` Google AI Studio `gemini-3.5-flash` tier, then the legacy `AI_API_KEY` DeepSeek `deepseek-v4-pro` (auto-appended as the last tier); `DAILY_GUIDE_FALLBACK_MODEL=deepseek-chat` | The older keys stay configured instead of being deleted, so a revoked/rate-limited Cline key still gets an answer from another provider. A third and later key can be added as `CHATBOT_FALLBACK_2_*` … `_9_*` |
 
 `DAILY_GUIDE_MODEL` / `_TEMPERATURE` / `_MAX_TOKENS` are **overrides only**, and
 `DAILY_GUIDE_API_URL` / `_API_KEY` optionally move the guide to its own provider.
@@ -1322,7 +1332,74 @@ it is live, so a future agent can tell deployed code from local work. Entries
 are historical: where an older one says "not uploaded" or quotes a rate such as
 5%, a newer entry supersedes it, and section 7 always holds the current rules.
 
-### 2026-11-11 — Personas back on DeepSeek's own API (uploaded; **restart pending**)
+### 2026-11-23 — Cline key as the primary AI, free models for the summary, other keys as the backup chain (checkout only)
+
+**What changed.** The owner supplied a Cline API key (`sk_0b62…5600`) and asked
+for it to be the **primary** AI key, with the other provider keys kept as
+backups, and for the **summary** (the once-a-day guide) to run on the models
+labelled **(free)**. `gilbert/ai.py` now builds an ordered chain instead of a
+single primary + single backup:
+
+- `CHATBOT_API_URL` / `_API_KEY` / `_MODEL` (+ `_MODELS`) is the primary key;
+- `CHATBOT_FALLBACK_*` is tier 1 and `CHATBOT_FALLBACK_2_*` … `_9_*` are
+  further keys, each with its own optional `_MODELS` list;
+- a populated legacy `AI_API_KEY` (the old DeepSeek settings) is appended as the
+  final backup automatically (`CHATBOT_LEGACY_FALLBACK=false` disables it), so
+  the switch to the new primary never loses a working key;
+- a model the gateway rejects (`model not supported` / `model not found`) moves
+  to the next model **on the same key**; a rejected key (401/402/403), a 429, a
+  5xx, a timeout or an open breaker moves to the **next key**;
+- on the Cline gateway the measured `:free` pool (`FREE_CLINE_MODELS`) is
+  appended automatically (`CHATBOT_FREE_FALLBACKS=false` disables it), and a
+  Cline key with no `CHATBOT_MODEL` defaults to `dots-studio/dots-3-note-preview:free`
+  rather than a model the gateway does not serve;
+- the guide reads `DAILY_GUIDE_MODELS`, `DAILY_GUIDE_FALLBACK_MODELS` and
+  `DAILY_GUIDE_FREE_FALLBACKS`, so the summary runs on the free models first and
+  only falls to the DeepSeek/Google backup keys when the key itself fails.
+
+**Free models measured on the real persona prompt** (private-mansion case, 1/1
+contracts used, 400k Union treasury against a 1M budget, 4,000 tokens): every
+row returned the correct public-benefit refusal and the exhausted quota —
+`dots-studio/dots-3-note-preview:free` **6.2 s**, `baidu/ernie-5.5-flash-preview:free`
+**8.5 s**, `nvidia/nemotron-3.5-super-vl:free` **10.8 s**,
+`nvidia/nemotron-3-ultra-550b-a55b:free` **20.3 s**. `inclusionai/ling-3.2-flash:free`
+and the two Gemma models answer **404 model not supported** on this key and are
+not in the pool.
+
+**Verified live against the supplied key.** A client configured with
+`models=[inclusionai/ling-3.2-flash:free, baidu/ernie-5.5-flash-preview:free]`
+logged the 404 for the first model, moved to the second on the same key and
+returned **OK**; a dead primary URL with the Cline key as `CHATBOT_FALLBACK_*`
+returned **OK** from the backup; a Cline client whose model was the unsupported
+`ling-3.2-flash:free` skipped to `dots-3-note-preview:free` and returned **OK**.
+`checks/run_all.py` **24/24**, `compileall`/`pyflakes` clean.
+
+**Still to apply on the host.** SFTP is unreachable from this session (TCP to
+`15.235.11.50:2022` is reset before the SSH banner, so no file can be pulled or
+pushed). Only the primary and guide lines need to change; the existing
+`CHATBOT_FALLBACK_*` (Google) and legacy `AI_*` (DeepSeek) lines stay exactly as
+they are and become the backup chain automatically:
+
+```dotenv
+CHATBOT_API_URL=https://api.cline.bot/api/v1
+CHATBOT_API_KEY=<the owner's sk_0b62…5600 Cline key>
+CHATBOT_MODEL=dots-studio/dots-3-note-preview:free
+CHATBOT_MODELS=baidu/ernie-5.5-flash-preview:free,nvidia/nemotron-3.5-super-vl:free,nvidia/nemotron-3-ultra-550b-a55b:free,recursive/flint-v1.0:free,openrouter/free
+DAILY_GUIDE_API_URL=https://api.cline.bot/api/v1
+DAILY_GUIDE_API_KEY=<the same Cline key>
+DAILY_GUIDE_MODEL=dots-studio/dots-3-note-preview:free
+DAILY_GUIDE_MODELS=baidu/ernie-5.5-flash-preview:free,nvidia/nemotron-3.5-super-vl:free,nvidia/nemotron-3-ultra-550b-a55b:free
+DAILY_GUIDE_TIMEOUT=600
+TAVILY_API_KEY=<the owner's tvly-dev-… key>
+LOOKUP_ENABLED=true
+```
+
+Resulting chain: Cline primary + its free models → the existing
+`CHATBOT_FALLBACK_*` Google key → the legacy `AI_API_KEY` DeepSeek key. No key
+is deleted. The hosting panel must restart after the `.env` write; no schema or
+command surface changed (still **119 commands / 17 cogs**).
+
+
 
 **What changed.** After a short trial of the Cline pass model the owner asked to
 switch back to DeepSeek. The personas now use

@@ -14,19 +14,33 @@ client, so the settings are the **chat-bot** config: ``CHATBOT_API_KEY``,
 ``CHATBOT_TEMPERATURE`` and ``CHATBOT_MAX_TOKENS``. The old ``AI_*`` names are
 still read as a fallback so an existing ``.env`` keeps working during migration.
 
-Backup provider
----------------
-A second endpoint can be configured with ``CHATBOT_FALLBACK_API_URL``,
-``CHATBOT_FALLBACK_API_KEY`` and ``CHATBOT_FALLBACK_MODEL``. Whenever the
-primary endpoint produces no reply - a revoked key (401/403), an empty balance
-(402), a rate limit (429), a 5xx, a timeout, or the failure breaker being open -
-the same call is retried once against the fallback. That is what keeps the
-personas answering when a free-tier key runs dry, instead of silently posting
-the canned fallback line for the rest of the day.
+Failover chain
+--------------
+More than one key can be configured. The primary endpoint uses
+``CHATBOT_API_URL`` / ``CHATBOT_API_KEY`` / ``CHATBOT_MODEL``; backups use
+``CHATBOT_FALLBACK_API_URL`` / ``_API_KEY`` / ``_MODEL`` (tier 1) and
+``CHATBOT_FALLBACK_2_*`` ... ``CHATBOT_FALLBACK_9_*`` for further tiers. A
+comma-separated ``*_MODELS`` list on any tier is tried model by model before the
+next key is used. Whenever an endpoint produces no reply - a revoked key
+(401/403), an empty balance (402), a rate limit (429), a 5xx, a timeout, or the
+failure breaker being open - the same call moves to the next key. A model the
+gateway rejects ("model not supported"), or one that returns no text at all,
+moves to the next model on the same key. That is what keeps the personas
+answering when a free-tier key runs dry, instead of silently posting the canned
+fallback line for the rest of the day.
+
+Free models
+-----------
+The Cline gateway marks its free models with a ``:free`` suffix.
+``FREE_CLINE_MODELS`` lists the ones measured on the real persona prompt, and
+they are appended as last-resort models whenever the configured endpoint is
+that gateway (``CHATBOT_FREE_FALLBACKS=false`` turns this off). The daily guide
+uses the same list for its own long-form summary call.
 """
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import os
 import random
@@ -60,6 +74,38 @@ MAX_MAX_CONCURRENCY = 64
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 RETRY_BASE_SECONDS = 0.75
 RETRY_MAX_SECONDS = 5.0
+
+# How many backup keys may be configured: CHATBOT_FALLBACK_* plus
+# CHATBOT_FALLBACK_2_* through CHATBOT_FALLBACK_9_*.
+MAX_FALLBACK_TIERS = 9
+
+# Statuses that mean "this key is not allowed to run this model", not "the key
+# is dead": the next model on the same key is worth a try.
+MODEL_REJECT_STATUSES = frozenset({400, 404, 422})
+
+# The Cline gateway (https://api.cline.bot/api/v1) labels free models with a
+# ``:free`` suffix. These six were exercised on the real Gilbert system prompt
+# plus a private-mansion case (1/1 contracts used, 400k Union treasury against a
+# 1M budget) and each returned the correct ruling; the comment carries the
+# measured latency. The list is the last-resort model pool on that gateway, so a
+# free key keeps the personas answering after a paid model or key fails.
+FREE_CLINE_MODELS = (
+    "dots-studio/dots-3-note-preview:free",      # 6.2 s
+    "baidu/ernie-5.5-flash-preview:free",        # 8.5 s
+    "nvidia/nemotron-3.5-super-vl:free",         # 10.8 s
+    "nvidia/nemotron-3-ultra-550b-a55b:free",    # 20.3 s, best prose
+    "recursive/flint-v1.0:free",                 # short but in character
+    "openrouter/free",                           # gateway's own free router
+)
+
+# Why the last ``_complete_with`` returned ``None``. A context variable keeps
+# the reason local to the calling task, so twenty simultaneous negotiations
+# never read each other's failure. "model" (rejected) and "empty" (no text) are
+# the reasons that justify another model on the same key; everything else moves
+# to the next key.
+_LAST_FAILURE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "ai_last_failure", default=""
+)
 
 
 def _env_int(name: str, default: int, low: int, high: int) -> int:
@@ -265,11 +311,106 @@ def _cfg(name: str, default: str = "") -> str:
 
 
 class _Provider(NamedTuple):
-    """One OpenAI-compatible endpoint: where to POST, with which key/model."""
+    """One OpenAI-compatible endpoint: where to POST, with which key/models.
+
+    ``models`` is the ordered candidate list for this key; ``model`` is the
+    first entry and is kept as its own field because callers and the docs talk
+    about "the model" on a tier. An empty ``models`` tuple means ``model`` only.
+    """
 
     base_url: str
     api_key: str
     model: str
+    models: tuple[str, ...] = ()
+
+    @property
+    def candidates(self) -> tuple[str, ...]:
+        return self.models or ((self.model,) if self.model else ())
+
+
+def _split_models(value: str) -> tuple[str, ...]:
+    """A comma-separated model list from the env, empty entries dropped."""
+    return tuple(part.strip() for part in (value or "").split(",") if part.strip())
+
+
+def _candidate_models(*groups) -> tuple[str, ...]:
+    """Merge model groups into one order-preserving, duplicate-free tuple.
+
+    Each group may be a string or an iterable of strings. The first name is the
+    tier's primary model; the rest are tried when the gateway rejects that model
+    (``model not supported``) without blaming the key.
+    """
+    ordered: list[str] = []
+    for group in groups:
+        if isinstance(group, str):
+            group = (group,)
+        for name in group or ():
+            name = (name or "").strip()
+            if name and name not in ordered:
+                ordered.append(name)
+    return tuple(ordered)
+
+
+def free_models_for(base_url: str) -> tuple[str, ...]:
+    """The free ``:free`` model pool for this endpoint, or ``()``.
+
+    Only the Cline gateway publishes that suffix; sending such a name to
+    DeepSeek or Google would just be a 404, so the list is host-scoped.
+    """
+    if "api.cline.bot" in (base_url or "").lower():
+        return FREE_CLINE_MODELS
+    return ()
+
+
+def _default_model_for(base_url: str) -> str:
+    """``deepseek-chat`` everywhere except the Cline gateway (a free model)."""
+    if "api.cline.bot" in (base_url or "").lower():
+        return FREE_CLINE_MODELS[0]
+    return _DEFAULT_MODEL
+
+
+def _free_fallbacks_enabled(name: str = "CHATBOT_FREE_FALLBACKS") -> bool:
+    """Whether the ``:free`` pool is appended (default on)."""
+    value = (os.getenv(name) or "").strip().lower()
+    if not value:
+        return True
+    return value not in {"0", "false", "no", "off"}
+
+
+def _legacy_fallback_enabled() -> bool:
+    """Whether a populated legacy ``AI_*`` key joins the chain (default on)."""
+    value = (os.getenv("CHATBOT_LEGACY_FALLBACK") or "").strip().lower()
+    if not value:
+        return True
+    return value not in {"0", "false", "no", "off"}
+
+
+def _legacy_provider(
+    primary_url: str, primary_key: str, *, free_fallbacks: bool
+) -> _Provider | None:
+    """The old ``AI_*`` endpoint as a last-resort tier, or ``None``.
+
+    Before the ``CHATBOT_*`` rename the personas ran on ``AI_API_URL`` /
+    ``AI_API_KEY`` / ``AI_MODEL``. When the new primary is configured those old
+    values are otherwise unreachable, so switching providers would silently
+    throw away a working key. They are appended after every explicit
+    ``CHATBOT_FALLBACK_*`` tier instead - "keep the other keys as backups".
+    Same endpoint and key as the primary is not duplicated.
+    """
+    if not _legacy_fallback_enabled():
+        return None
+    if not (os.getenv("CHATBOT_API_URL") or os.getenv("CHATBOT_API_KEY")):
+        return None
+    url = _normalise_url(os.getenv("AI_API_URL") or DEFAULT_BASE_URL)
+    key = (os.getenv("AI_API_KEY") or "").strip()
+    if not key or (url == primary_url and key == primary_key):
+        return None
+    model = (os.getenv("AI_MODEL") or "").strip() or _default_model_for(url)
+    models = _candidate_models(
+        _apply_deepseek_alias(url, model),
+        free_models_for(url) if free_fallbacks else (),
+    )
+    return _Provider(url, key, models[0], models)
 
 
 def _normalise_url(url: str) -> str:
@@ -296,18 +437,60 @@ def _apply_deepseek_alias(base_url: str, model: str) -> str:
     return model
 
 
-def _fallback_provider(primary_model: str) -> _Provider | None:
-    """The backup endpoint from ``CHATBOT_FALLBACK_*``, or ``None``.
+def _fallback_providers(
+    primary_model: str,
+    *,
+    primary_url: str = "",
+    fallback_model: str = "",
+    fallback_models: tuple[str, ...] | list[str] | None = None,
+    free_fallbacks: bool = True,
+) -> tuple[_Provider, ...]:
+    """The ordered backup tiers from ``CHATBOT_FALLBACK_*``.
 
-    Both a URL and a key are required; an empty model means "same model as the
-    primary", which is only useful when the two share a provider.
+    Tier 1 keeps the original names; tiers 2-9 insert the tier number before
+    the field name (``CHATBOT_FALLBACK_2_API_URL``). Both a URL and a key are
+    required for a tier to exist. An empty model falls back to the primary
+    model, which is only useful when the two tiers share a provider.
+
+    ``fallback_model`` overrides tier 1's model for a single caller (the daily
+    guide), and ``free_fallbacks`` appends the gateway's ``:free`` pool to every
+    Cline tier.
     """
-    base_url = _normalise_url(_cfg("FALLBACK_API_URL", ""))
-    api_key = _cfg("FALLBACK_API_KEY", "")
-    if not base_url or not api_key:
-        return None
-    model = (_cfg("FALLBACK_MODEL", "") or primary_model).strip()
-    return _Provider(base_url, api_key, _apply_deepseek_alias(base_url, model))
+    providers: list[_Provider] = []
+    extra = _candidate_models(fallback_models or ())
+    for tier in range(1, MAX_FALLBACK_TIERS + 1):
+        prefix = "FALLBACK_" if tier == 1 else f"FALLBACK_{tier}_"
+        base_url = _normalise_url(_cfg(prefix + "API_URL", ""))
+        api_key = _cfg(prefix + "API_KEY", "")
+        if not base_url or not api_key:
+            continue
+        configured = (_cfg(prefix + "MODEL", "") or "").strip()
+        if not configured:
+            # Sharing a provider (and therefore its model names) is common; a
+            # different provider needs its own default, not a Cline model name.
+            configured = (
+                primary_model
+                if not primary_url or base_url == _normalise_url(primary_url)
+                else _default_model_for(base_url)
+            )
+        models = _candidate_models(
+            (fallback_model,) if tier == 1 and fallback_model else (),
+            configured,
+            _split_models(_cfg(prefix + "MODELS", "")),
+            extra if tier == 1 else (),
+            free_models_for(base_url) if free_fallbacks else (),
+        )
+        models = tuple(_apply_deepseek_alias(base_url, name) for name in models)
+        providers.append(
+            _Provider(base_url, api_key, models[0] if models else configured, models)
+        )
+    return tuple(providers)
+
+
+def _fallback_provider(primary_model: str) -> _Provider | None:
+    """The first backup tier, kept for callers that still expect one."""
+    providers = _fallback_providers(primary_model)
+    return providers[0] if providers else None
 
 
 def provider_hint(status: int, body: str) -> str:
@@ -323,8 +506,12 @@ def provider_hint(status: int, body: str) -> str:
         return "check CHATBOT_API_KEY (or CHATBOT_FALLBACK_API_KEY)"
     if status == 402 or "insufficient_credits" in text:
         return "the provider account is out of credit"
-    if status == 404 or "model not found" in text:
-        return "check CHATBOT_MODEL against the provider's model list"
+    if status in MODEL_REJECT_STATUSES or "model not found" in text:
+        if status == 404 or any(
+            marker in text
+            for marker in ("model not found", "model not supported", "invalid model")
+        ):
+            return "check CHATBOT_MODEL against the provider's model list"
     if status == 429 or "rate limit" in text:
         return "rate limited; retry later or slow the caller down"
     if "empty response content" in text:
@@ -333,6 +520,32 @@ def provider_hint(status: int, body: str) -> str:
             "before they answer, so raise CHATBOT_MAX_TOKENS/DAILY_GUIDE_MAX_TOKENS"
         )
     return ""
+
+
+def _failure_reason(status: int, body: str) -> str:
+    """Classify a failed provider response for the failover chain."""
+    text = (body or "").lower()
+    model_markers = (
+        "model not found",
+        "model not supported",
+        "invalid model",
+        "model not exist",
+        "does not exist",
+        "unknown model",
+    )
+    if status in MODEL_REJECT_STATUSES and (
+        status == 404 or not text or any(marker in text for marker in model_markers)
+    ):
+        return "model"
+    if status in (401, 403):
+        return "auth"
+    if status == 402:
+        return "credit"
+    if status == 429:
+        return "rate"
+    if status >= 500:
+        return "server"
+    return "http"
 
 
 def reply_text(payload) -> str | None:
@@ -449,12 +662,15 @@ class GilbertAI:
         self,
         *,
         model: str | None = None,
+        models: tuple[str, ...] | list[str] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout: float | None = None,
         api_url: str | None = None,
         api_key: str | None = None,
         fallback_model: str | None = None,
+        fallback_models: tuple[str, ...] | list[str] | None = None,
+        use_free_fallbacks: bool | None = None,
     ) -> None:
         """One chat-completions client.
 
@@ -467,11 +683,36 @@ class GilbertAI:
         and ``fallback_model`` overrides ``CHATBOT_FALLBACK_MODEL`` for that
         caller alone - the guide falls back to the big pro tier, the personas to
         the fast one.
+
+        ``models`` / ``fallback_models`` are ordered candidate lists, so a key
+        can offer more than one model before the client moves to another key.
+        ``use_free_fallbacks`` controls whether the gateway's ``:free`` pool is
+        appended; ``None`` reads ``CHATBOT_FREE_FALLBACKS`` (default on).
         """
         self.base_url = _normalise_url(api_url or _cfg("API_URL", DEFAULT_BASE_URL))
         self.api_key = (api_key if api_key is not None else _cfg("API_KEY", "")).strip()
-        self.model = (model or _cfg("MODEL", _DEFAULT_MODEL) or _DEFAULT_MODEL).strip()
-        self.model = _apply_deepseek_alias(self.base_url, self.model)
+
+        supplied = _candidate_models((model,) if model else (), models or ())
+        if supplied:
+            ordered = supplied
+        else:
+            ordered = _candidate_models(
+                (model,) if model else (),
+                _cfg("MODEL", "") or _default_model_for(self.base_url),
+                _split_models(_cfg("MODELS", "")),
+            )
+        if not ordered:
+            ordered = (_default_model_for(self.base_url),)
+        free = (
+            _free_fallbacks_enabled()
+            if use_free_fallbacks is None
+            else bool(use_free_fallbacks)
+        )
+        if free:
+            ordered = _candidate_models(ordered, free_models_for(self.base_url))
+        self.models = tuple(_apply_deepseek_alias(self.base_url, name) for name in ordered)
+        self.model = self.models[0]
+
         try:
             self.timeout = float(timeout) if timeout is not None else float(_cfg("TIMEOUT", "60"))
         except ValueError:
@@ -489,58 +730,88 @@ class GilbertAI:
         except ValueError:
             self.max_tokens = 900
 
-        fallback = _fallback_provider(self.model)
-        if fallback is not None and (fallback_model or "").strip():
-            fallback = fallback._replace(model=(fallback_model or "").strip())
-        if fallback is not None and fallback == _Provider(
-            self.base_url, self.api_key, self.model
+        providers = _fallback_providers(
+            self.model,
+            primary_url=self.base_url,
+            fallback_model=(fallback_model or "").strip(),
+            fallback_models=fallback_models,
+            free_fallbacks=free,
+        )
+        # A tier that repeats the primary endpoint, key and model buys nothing.
+        primary = (self.base_url, self.api_key, self.model)
+        fallbacks = [
+            tier for tier in providers if (tier.base_url, tier.api_key, tier.model) != primary
+        ]
+        # The old AI_* key is still a working provider; keep it as the final
+        # backup rather than making the operator duplicate it by hand.
+        legacy = _legacy_provider(self.base_url, self.api_key, free_fallbacks=free)
+        if legacy is not None and all(
+            (tier.base_url, tier.api_key) != (legacy.base_url, legacy.api_key)
+            for tier in fallbacks
         ):
-            # Same endpoint, key and model: retrying it once more buys nothing.
-            fallback = None
-        self.fallback = fallback
+            fallbacks.append(legacy)
+        self.fallbacks = tuple(fallbacks)
+        self.fallback = self.fallbacks[0] if self.fallbacks else None
 
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key) or self.fallback is not None
+        return bool(self.api_key) or bool(self.fallbacks)
+
+    @property
+    def chain(self) -> tuple[_Provider, ...]:
+        """Primary first, then every configured backup key, in order."""
+        primary: tuple[_Provider, ...] = ()
+        if self.api_key:
+            primary = (_Provider(self.base_url, self.api_key, self.model, self.models),)
+        return primary + self.fallbacks
 
     async def complete(self, messages: list[dict]) -> str | None:
-        """Return the reply, or ``None`` if neither provider could answer.
+        """Return the reply, or ``None`` when every key and model failed.
 
-        The primary provider is tried first. If it yields nothing - a dead key,
-        an empty balance, a rate limit, an outage or an open breaker - the
-        configured fallback gets one attempt, because posting the canned
-        persona line while a working key sits unused is the bug this covers.
+        Keys are tried in order (primary, then ``CHATBOT_FALLBACK_*`` tiers),
+        and each key's ``*_MODELS`` list is tried in order too. A dead key, an
+        empty balance, a rate limit, an outage or an open breaker moves to the
+        next key; only a rejected model or a model that returned no text moves
+        to the next model on the same key. Posting the canned persona line while
+        a working key sits unused is the bug this covers.
         """
-        if self.api_key:
-            reply = await self._complete_with(
-                self.base_url, self.api_key, self.model, messages
-            )
-            if reply is not None or self.fallback is None:
-                return reply
-            logger.warning(
-                "Primary AI endpoint %s (%s) gave no reply; retrying on the "
-                "fallback %s (%s)",
-                self.base_url,
-                self.model,
-                self.fallback.base_url,
-                self.fallback.model,
-            )
-        elif self.fallback is not None:
-            logger.warning(
-                "CHATBOT_API_KEY is not set; using the fallback endpoint %s (%s)",
-                self.fallback.base_url,
-                self.fallback.model,
-            )
-        else:
+        chain = self.chain
+        if not chain:
             logger.warning("AI_API_KEY is not set; Gilbert cannot generate a reply.")
             return None
-
-        return await self._complete_with(
-            self.fallback.base_url,
-            self.fallback.api_key,
-            self.fallback.model,
-            messages,
-        )
+        if not self.api_key:
+            logger.warning(
+                "CHATBOT_API_KEY is not set; using the fallback endpoint %s (%s)",
+                chain[0].base_url,
+                chain[0].model,
+            )
+        for index, provider in enumerate(chain):
+            for position, candidate in enumerate(provider.candidates):
+                reply = await self._complete_with(
+                    provider.base_url, provider.api_key, candidate, messages
+                )
+                if reply is not None:
+                    return reply
+                reason = _LAST_FAILURE.get()
+                if reason in {"model", "empty"} and position + 1 < len(provider.candidates):
+                    logger.warning(
+                        "Model %s gave no usable reply on %s (%s); trying %s on the same key",
+                        candidate,
+                        provider.base_url,
+                        reason,
+                        provider.candidates[position + 1],
+                    )
+                    continue
+                break
+            if index + 1 < len(chain):
+                logger.warning(
+                    "AI endpoint %s (%s) gave no reply; retrying on %s (%s)",
+                    provider.base_url,
+                    provider.model,
+                    chain[index + 1].base_url,
+                    chain[index + 1].model,
+                )
+        return None
 
     async def _complete_with(
         self,
@@ -549,7 +820,13 @@ class GilbertAI:
         model: str,
         messages: list[dict],
     ) -> str | None:
-        """One provider's retry ladder. ``None`` means "this provider is out"."""
+        """One provider's retry ladder. ``None`` means "this provider is out".
+
+        Also records *why* in ``_LAST_FAILURE`` so ``complete()`` can tell a
+        rejected model (try the next model on this key) from a rejected key
+        (move to the next configured key).
+        """
+        _LAST_FAILURE.set("")
         payload = {
             "model": model,
             "messages": messages,
@@ -572,6 +849,7 @@ class GilbertAI:
                 "AI endpoint %s is paused after repeated failures; skipping this call",
                 base_url,
             )
+            _LAST_FAILURE.set("breaker")
             return None
 
         # Queue behind the shared cap: the provider is the bottleneck, and
@@ -598,6 +876,7 @@ class GilbertAI:
                                     else type(data).__name__,
                                 )
                                 breaker_note_failure(breaker)
+                                _LAST_FAILURE.set("empty")
                             else:
                                 breaker_note_success(breaker)
                                 _log_usage(data)
@@ -612,6 +891,12 @@ class GilbertAI:
                             body,
                             f" [hint: {hint}]" if hint else "",
                         )
+                        reason = _failure_reason(resp.status, body)
+                        _LAST_FAILURE.set(reason)
+                        if reason == "model":
+                            # The key works; this model does not. Do not open
+                            # the breaker for a configuration mistake.
+                            return None
                         if resp.status not in RETRY_STATUSES or attempt + 1 >= attempts:
                             # 429 means the provider is healthy but busy: that is
                             # not an outage, so it never opens the breaker.
@@ -620,6 +905,7 @@ class GilbertAI:
                             return None
                         delay = _retry_delay(resp, attempt)
                 except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    _LAST_FAILURE.set("timeout")
                     logger.warning(
                         "Gilbert AI request failed (attempt %s/%s): %s",
                         attempt + 1,
@@ -632,10 +918,13 @@ class GilbertAI:
                         return None
                     delay = _retry_delay(None, attempt)
                 except Exception as exc:  # pragma: no cover - unexpected shape
+                    _LAST_FAILURE.set("error")
                     logger.exception("Gilbert AI request failed: %s", exc)
                     breaker_note_failure(breaker)
                     return None
                 # Back off, but never past the overall budget.
                 await asyncio.sleep(max(0.0, min(delay, deadline - time.monotonic())))
+            if not _LAST_FAILURE.get():
+                _LAST_FAILURE.set("timeout")
             return None
 

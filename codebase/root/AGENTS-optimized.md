@@ -1,18 +1,23 @@
 # Agent guide — optimized read-first version
 
-> **Current state (2026-11-11):** 119 commands / 17 cogs, all 24 checks green
-> on this checkout. **AI (uploaded 2026-11-11; restart pending):** the personas
-> (Gilbert + Albert, `/poker` names) are back on DeepSeek's own API
-> `https://api.deepseek.com` with `CHATBOT_MODEL=deepseek-v4-pro` (13.9 s on the
-> real prompt; `deepseek-chat` is the 3.8 s alternative); the daily guide stays
-> on DeepSeek `deepseek-chat` with its own `DAILY_GUIDE_API_KEY` and
-> `DAILY_GUIDE_TIMEOUT=600` (the pro tier took 206 s for 12k chars and kept
-> hitting the 240 s persona timeout — a guide that says
-> `_Generated … without the AI model._` means it timed out, not that the key is
-> dead); Google AI Studio `gemini-3.5-flash` is the **cross-provider backup for
-> either** (`CHATBOT_FALLBACK_*`, `DAILY_GUIDE_FALLBACK_MODEL`) and
-> `GilbertAI.complete()` retries any failed primary once there. **Also uploaded
-> 2026-11-10 (stamp `20261110-164655`, 11 files), restart pending:**
+> **Current state (2026-11-23):** 119 commands / 17 cogs, all 24 checks green
+> on this checkout. **AI (checkout only; apply the `.env` lines in README section
+> 12):** the owner's Cline key is the primary (`https://api.cline.bot/api/v1`)
+> and the personas + daily guide run on its **free** `:free` models —
+> `dots-studio/dots-3-note-preview:free` (6.2 s on the real prompt) first, then
+> `baidu/ernie-5.5-flash-preview:free` (8.5 s), `nvidia/nemotron-3.5-super-vl:free`
+> (10.8 s) and the rest of `FREE_CLINE_MODELS`. The earlier DeepSeek
+> (`deepseek-v4-pro`) and Google (`gemini-3.5-flash`) keys are `CHATBOT_FALLBACK_*`
+> / `CHATBOT_FALLBACK_2_*`; `CHATBOT_FALLBACK_3_*` … `_9_*` are free for more
+> keys. `*_MODELS` is an ordered list per key: only `404 model not
+> found`/`400 model not supported` or an empty reply tries the next model on that
+> key, every other failure moves to the next key. `DAILY_GUIDE_MODELS` +
+> `DAILY_GUIDE_FREE_FALLBACKS` put the summary on the free models;
+> `DAILY_GUIDE_TIMEOUT=600` stays (the pro tier took 206 s for 12k chars — a
+> guide that says `_Generated … without the AI model._` timed out, the key is
+> fine). The Tavily key belongs in `TAVILY_API_KEY` + `LOOKUP_ENABLED=true`.
+> **Also uploaded 2026-11-10 (stamp `20261110-164655`, 11 files), restart
+> pending:**
 > `/casino withdraw` keeps a worst-case reserve for open
 > blackjack/poker hands (`open_hand_stakes` + `casino.reserve_for_open_hands`,
 > `House Reserve` refusal, `/casino balance` shows the held line); account names

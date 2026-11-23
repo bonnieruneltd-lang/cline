@@ -696,6 +696,10 @@ class DailySync:
         # cooler temperature and a bigger budget than a snappy negotiation
         # reply. Empty DAILY_GUIDE_MODEL means "same model as the personas".
         self.guide_model = env_str("DAILY_GUIDE_MODEL", "")
+        # ...and a guide-only model list. On the Cline gateway the free models
+        # carry a ":free" suffix; listing them here keeps the once-a-day
+        # summary off the paid tier unless every free one is rejected.
+        self.guide_models = env_str("DAILY_GUIDE_MODELS", "")
         # ...and on its own provider. The personas answer in a few seconds on a
         # fast chat model; a once-a-day document is better served by a separate
         # key, so it can run dry without taking the personas down with it.
@@ -704,6 +708,10 @@ class DailySync:
         # The shared backup provider is used by both, but the guide's own model
         # is the big tier while the personas use the fast one.
         self.guide_fallback_model = env_str("DAILY_GUIDE_FALLBACK_MODEL", "")
+        # Additional guide-only models on the first backup key, comma separated.
+        self.guide_fallback_models = env_str("DAILY_GUIDE_FALLBACK_MODELS", "")
+        # Append the gateway's ":free" pool when the guide has no explicit list.
+        self.guide_free_fallbacks = env_bool("DAILY_GUIDE_FREE_FALLBACKS", True)
         self.guide_temperature = max(
             0.0, min(1.0, env_float("DAILY_GUIDE_TEMPERATURE", DEFAULT_GUIDE_TEMPERATURE))
         )
@@ -1154,14 +1162,21 @@ class DailySync:
 
     async def generate_guide(self, parts: dict) -> str:
         text = format_source(parts, max_chars=self.guide_source_chars)
+        guide_models = [m.strip() for m in self.guide_models.split(",") if m.strip()]
+        fallback_models = [
+            m.strip() for m in self.guide_fallback_models.split(",") if m.strip()
+        ]
         ai = GilbertAI(
             model=self.guide_model or None,
+            models=guide_models or None,
             temperature=self.guide_temperature,
             max_tokens=self.guide_max_tokens,
             timeout=self.guide_timeout or None,
             api_url=self.guide_api_url or None,
             api_key=self.guide_api_key or None,
             fallback_model=self.guide_fallback_model or None,
+            fallback_models=fallback_models or None,
+            use_free_fallbacks=self.guide_free_fallbacks,
         )
         guide: Optional[str] = None
         if ai.enabled:

@@ -83,19 +83,36 @@ fallback when the matching `CHATBOT_*` value is blank.
 | `API_KEY` | `AI_API_KEY` | empty | Enables the client; empty means fallback replies |
 | `API_URL` | `AI_API_URL` | `https://api.deepseek.com` | Base URL, no trailing slash needed |
 | `MODEL` | `AI_MODEL` | `deepseek-chat` | Model name |
+| `MODELS` | — | empty | Extra models for this key, comma separated; tried before the next key when one is rejected |
+| `FREE_FALLBACKS` | — | `true` | Append the gateway's measured `:free` pool (Cline only) |
+| `LEGACY_FALLBACK` | — | `true` | Append a populated legacy `AI_API_KEY` as the final backup key |
 | `TIMEOUT` | `AI_TIMEOUT` | `60` | Seconds |
 | `TEMPERATURE` | `AI_TEMPERATURE` | `0.6` | Sampling temperature |
 | `MAX_TOKENS` | `AI_MAX_TOKENS` | `900` | Reply cap — **must cover reasoning too** |
 
 A backup provider is configured with `CHATBOT_FALLBACK_API_URL`,
-`CHATBOT_FALLBACK_API_KEY` and `CHATBOT_FALLBACK_MODEL`. When the primary gives
-no reply — 401/403 (key revoked), 402 (empty balance), 429 (rate limited), 5xx,
-timeout, or the failure breaker is open — the same call is retried once on the
-backup. Without it, a free key running dry posts the canned persona line for the
-rest of the day while a working key sits unused. `API_URL` / `API_KEY` /
-`fallback_model` constructor overrides let the daily guide use its own provider
+`CHATBOT_FALLBACK_API_KEY` and `CHATBOT_FALLBACK_MODEL`, with further keys at
+`CHATBOT_FALLBACK_2_*` … `CHATBOT_FALLBACK_9_*`. A populated legacy `AI_API_KEY`
+is appended as the **final** backup automatically (`CHATBOT_LEGACY_FALLBACK=false`
+disables it), so switching the `CHATBOT_*` provider never throws away the old
+key. When the current key gives no reply — 401/403 (key revoked), 402 (empty
+balance), 429 (rate limited), 5xx, timeout, or the failure breaker is open — the
+same call moves to the next key.
+Without it, a free key running dry posts the canned persona line for the rest of
+the day while a working key sits unused. `API_URL` / `API_KEY` / `fallback_model`
+constructor overrides let the daily guide use its own provider
 (`DAILY_GUIDE_API_URL`, `DAILY_GUIDE_API_KEY`, `DAILY_GUIDE_FALLBACK_MODEL`)
 without touching the personas.
+
+`*_MODELS` adds an ordered model list to any key. A `404 model not found` /
+`400 model not supported` means the key is fine but that model is not served, and
+an empty reply means the model produced no text (often a reasoning budget worn
+out) — both try the next model before touching another key. Any other failure
+moves straight to the next key, so a timeout cannot multiply into one call per
+model. On the Cline gateway the measured free models (`FREE_CLINE_MODELS`, all
+suffixed `:free`) are appended automatically; `CHATBOT_FREE_FALLBACKS=false`
+turns that off, and a Cline key with no model set defaults to
+`dots-studio/dots-3-note-preview:free`.
 
 Any OpenAI-compatible endpoint works: OpenAI, Azure OpenAI, OpenRouter, Ollama,
 LM Studio, vLLM, Google AI Studio
@@ -106,35 +123,42 @@ overrides, which is how `DailySync` runs the guide on a different model from the
 same key (`DAILY_GUIDE_MODEL`, `DAILY_GUIDE_TEMPERATURE`,
 `DAILY_GUIDE_MAX_TOKENS`).
 
-**Live choice (2026-11-11, third pass):** personas are back on DeepSeek's own
-API `https://api.deepseek.com` with `deepseek-v4-pro` (0.75, 16,000, 240 s) —
-**13.9 s** on the real negotiation prompt and correct on public benefit, the 1/1
-quota and a 400k-vs-1M treasury; `deepseek-chat` gave the same ruling in **3.8 s**
-if speed matters more. The owner asked to switch back to DeepSeek after a short
-Cline trial. The guide stays on DeepSeek `deepseek-chat` (0.25, 16,000, 600 s)
-with its own key. The **cross-provider backup** is Google AI Studio
-`gemini-3.5-flash` (5–9 s), used by both the personas and the guide. Earlier the
-same day: Cline `cline-pass/deepseek-v4-pro` (9–16 s), then Google
-`gemini-3.5-flash`; the 2026-11-06 choice was
-`cline-pass/deepseek-v4.1-flash-1017`. `cline-pass/deepseek-v4.1-pro` does not
-exist — the alias is `cline-pass/deepseek-v4-pro`.
+**Live choice (2026-11-23):** the owner's Cline key is the **primary**
+(`https://api.cline.bot/api/v1`). The personas and the daily guide run on the
+gateway's free models — `dots-studio/dots-3-note-preview:free` first (6.2 s on
+the real persona prompt), then `baidu/ernie-5.5-flash-preview:free` (8.5 s) and
+`nvidia/nemotron-3.5-super-vl:free` (10.8 s), each correct on the public-benefit
+rule, the 1/1 nation quota and a 400k-vs-1M treasury. The existing
+`CHATBOT_FALLBACK_*` Google AI Studio key and the legacy `AI_API_KEY` DeepSeek
+key stay configured and are tried in that order when the Cline key is rejected
+or rate limited — no key is deleted. `inclusionai/ling-3.2-flash:free` and the
+Gemma free models answer `404 model not supported` on this key and are not in
+the pool. Earlier: DeepSeek `deepseek-v4-pro` (13.9 s), Cline
+`cline-pass/deepseek-v4-pro` (9–16 s), Google `gemini-3.5-flash`; the 2026-11-06
+choice was `cline-pass/deepseek-v4.1-flash-1017`.
 
 ### Choosing a model against a live key
 
 "the key is active but nothing is generated" is almost never the key. Run the
 matrix below before changing any `.env` value — each row is a real response
-measured on 2026-11-11. The `deepseek-*` rows used `POST
+measured on 2026-11-11 or 2026-11-23. The `deepseek-*` rows used `POST
 https://api.deepseek.com/chat/completions`, the Google rows used `POST
 https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`, and
-the `cline-pass/*` rows used `POST https://api.cline.bot/api/v1/chat/completions`:
+the `cline-pass/*` / `:free` rows used `POST https://api.cline.bot/api/v1/chat/completions`:
 
 | Model | Result | Meaning |
 |---|---|---|
-| `deepseek-v4-pro` (api.deepseek.com) | 200 in 13.9 s | ✅ the live persona model |
+| `dots-studio/dots-3-note-preview:free` | 200 in 6.2 s | ✅ the live persona and guide model (free) |
+| `baidu/ernie-5.5-flash-preview:free` | 200 in 8.5 s | ✅ free model, next in the pool |
+| `nvidia/nemotron-3.5-super-vl:free` | 200 in 10.8 s | ✅ free model, next in the pool |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | 200 in 20.3 s | ✅ free model, best prose, slowest |
+| `recursive/flint-v1.0:free`, `openrouter/free` | 200 in 2–4 s | ✅ last-resort free writers |
+| `inclusionai/ling-3.2-flash:free`, `google/gemma-4-26b-a4b-it:free`, `google/gemma-4-31b-it:free` | **404 model not supported** | listed by the catalogue, not served on this key — not in the pool |
+| `deepseek-v4-pro` (api.deepseek.com) | 200 in 13.9 s | the previous persona model, now `CHATBOT_FALLBACK_*` |
 | `deepseek-chat` (api.deepseek.com) | 200 in 3.8 s | fastest correct DeepSeek option |
 | `cline-pass/deepseek-v4-pro` | 200 in 9–16 s | Cline gateway alternative (short trial) |
 | `cline-pass/deepseek-v4.1-flash-1017` | 200 in 7–8 s | the 2026-11-06 persona model: faster but plainer prose |
-| `gemini-3.5-flash` | 200 in 5–9 s | ✅ the live cross-provider **backup** |
+| `gemini-3.5-flash` | 200 in 5–9 s | ✅ the cross-provider **backup** |
 | `gemini-3.1-flash-lite` | 200 in 0.7 s | ✅ fastest fallback candidate, plainer prose |
 | `gemini-3.6-flash` | 200 in 34–48 s | too slow for a negotiation |
 | `gemini-3.7-flash`, `gemini-3.8-flash` | **503 / read timeout** | Google-side spike, retry later — *not* a key problem |
